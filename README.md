@@ -378,21 +378,55 @@ Releases are tag driven and run in GitHub Actions
 | `npm version minor && git push --follow-tags` | any bump | `latest` |
 
 The workflow refuses to publish when the tag does not match the version in
-`package.json`, runs the test suite, publishes with `--provenance` (npm shows
-the build attestation), and creates a GitHub release with generated notes
-(marked prerelease for `-beta` / `-rc` versions).
+`package.json`, runs the test suite, publishes with provenance, and creates a
+GitHub release with generated notes (marked prerelease for `-beta` / `-rc`
+versions).
+
+### Authentication: npm Trusted Publishing (no tokens)
+
+npm removed classic/Automation tokens in November 2025 and retires direct-publish
+granular tokens in January 2027, so this repository uses
+[Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) only —
+there is no `NPM_TOKEN` secret anywhere.
+
+**One-time bootstrap.** A trusted publisher can only be configured for a package
+that already exists on npm, so the **first version has to be published by
+hand**:
+
+```sh
+npm login
+npm publish --access public   # prompts for your 2FA code
+```
+
+Then, on npmjs.com → the package → **Settings**:
+
+1. **Trusted publishing** → add GitHub Actions with organization/user
+   `zhangweiii`, repository `pi-clinepass-auto`, workflow filename
+   `release.yml`, and **enable the `npm publish` action** — configurations
+   created after 2026-09-03 default to staged publishing only, which would
+   reject a direct `npm publish`.
+2. **Publishing access** → *Require two-factor authentication and disallow
+   tokens* — after this, only the trusted workflow can publish.
+
+Every later release is then just:
+
+```sh
+npm run release:beta     # or release:stable
+```
+
+Provenance attestations are generated automatically for OIDC publishes from a
+public repository.
+
+If you would rather approve every release by hand, leave the trusted publisher
+at the default *stage-only* setting, change the workflow to
+`npm stage publish`, and promote a staged version with
+`npm stage approve <id> --otp <code>`.
 
 Install a prerelease with a pinned dist-tag:
 
 ```sh
 pi install npm:pi-clinepass-auto@beta
 ```
-
-Authentication uses npm
-[Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC): on
-npmjs.com open the package → Settings → Trusted publishing and add this
-repository plus the workflow file `release.yml`. The alternative is an
-`NPM_TOKEN` secret with the `NODE_AUTH_TOKEN` line in the workflow uncommented.
 
 Publishing with the `pi-package` keyword is all that is needed for the
 [Pi package gallery](https://pi.dev/packages) to pick the release up; optional

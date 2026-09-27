@@ -336,19 +336,48 @@ CI 在每次 push 与 PR 时执行 `npm ci`、类型检查与测试。
 | `npm run release:beta` | `0.2.0-beta.0` | `beta` |
 | `npm version minor && git push --follow-tags` | 任意递增 | `latest` |
 
-工作流会在 tag 与 `package.json` 版本不一致时拒绝发布，随后跑测试、以 `--provenance` 发布
-（npm 页面会显示构建证明），并创建带自动生成 release notes 的 GitHub Release
-（`-beta` / `-rc` 版本标记为 prerelease）。
+工作流会在 tag 与 `package.json` 版本不一致时拒绝发布，随后跑测试、以 provenance 发布，
+并创建带自动生成 release notes 的 GitHub Release（`-beta` / `-rc` 版本标记为 prerelease）。
+
+### 鉴权：npm Trusted Publishing（不用 token）
+
+npm 已在 2025 年 11 月移除 classic/Automation token，并将在 2027 年 1 月下线可直接发布的
+granular token，所以本仓库只使用
+[Trusted Publishing](https://docs.npmjs.com/trusted-publishers)（OIDC）——**仓库里没有任何
+`NPM_TOKEN` secret**。
+
+**一次性引导。** Trusted publisher 只能配置在"已经存在于 npm 上的包"上，所以**第一个版本必须
+手动发布**：
+
+```sh
+npm login
+npm publish --access public   # 会提示输入 2FA 验证码
+```
+
+然后在 npmjs.com → 该包 → **Settings**：
+
+1. **Trusted publishing** → 添加 GitHub Actions，填写组织/用户 `zhangweiii`、仓库
+   `pi-clinepass-auto`、工作流文件名 `release.yml`，并**勾选允许 `npm publish`**——
+   2026-09-03 之后新建的配置默认只允许 staged publishing，会导致直接 `npm publish` 被拒。
+2. **Publishing access** → 选择 *Require two-factor authentication and disallow tokens*，
+   此后只有这条受信任的工作流能发布。
+
+之后的每次发布只需：
+
+```sh
+npm run release:beta     # 或 release:stable
+```
+
+公开仓库通过 OIDC 发布时，provenance 证明会自动生成。
+
+如果你希望每次发布都人工复核，可以把 trusted publisher 保持在默认的 *stage-only*，
+把工作流改成 `npm stage publish`，再用 `npm stage approve <id> --otp <code>` 批准。
 
 安装预发布版本时用 dist-tag 固定：
 
 ```sh
 pi install npm:pi-clinepass-auto@beta
 ```
-
-鉴权使用 npm [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)（OIDC）：
-在 npmjs.com 打开该包 → Settings → Trusted publishing，添加本仓库与工作流文件 `release.yml`。
-另一种做法是配置 `NPM_TOKEN` secret 并取消工作流里 `NODE_AUTH_TOKEN` 那行的注释。
 
 只要发布时带上 `pi-package` keyword，[Pi 官方包画廊](https://pi.dev/packages) 就会自动收录；
 可选的 `pi.image` / `pi.video` 字段可以加预览图。
