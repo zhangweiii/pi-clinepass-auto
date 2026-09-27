@@ -77,7 +77,7 @@ Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13%
 
 | 能力 | 说明 |
 | --- | --- |
-| 模型 | `cline-pass/*` 以及免费的 `cline-free/*` / `stealth/*`，实时更新 → [模型](#模型) |
+| 模型 | `cline-pass/*`（以及仅限 IDE/CLI 的免费档，默认隐藏），实时更新 → [模型](#模型) |
 | 用量表 | footer 计量、`/cline-usage` 报表、套餐窗口、跨会话持久化 → [用量与额度](#用量与额度) |
 | 网页工具 | `web_search`（Cline 的 Exa 搜索）与 `web_fetch`（本地、免费） → [网页工具](#网页搜索与页面抓取) |
 | 上游渠道 | 查看模型由哪个上游服务、并在网关允许时指定渠道 → [上游渠道](#上游渠道) |
@@ -102,9 +102,12 @@ pi --model clinepass/cline-pass/deepseek-v4.1-flash
 - **按需刷新**：`/clinepass → Refresh model catalog`，无需重启 pi 立即重新注册模型。
 - **离线可用**：网络不可用时回退到本地缓存目录（首次运行回退到内置 seed）。provider 永远不会为空。
 
-> 免费档模型（`cline-free/*`、`stealth/*`）会在目录里显示，但 Cline 目前会在 pi 走的 API 路径上
-> 拒绝它们（`403 ... only available via Cline product surfaces`）。这是 Cline 侧的限制，
-> 目录只是如实反映账号能看到什么。
+> 免费档模型（`cline-free/*`、`stealth/*`）**默认隐藏**。Cline 官方文档写得很明确：
+> *"Free model usage is not supported through the Cline API. Free models are only
+> available in the Cline IDE Extension and CLI"*，网关对它们的回答就是
+> `403 … only available via Cline product surfaces`。`/clinepass → Show free models`
+> 可以把它们注册出来（标注 `(Cline Free, IDE/CLI only)`）以便查看；调用失败时插件会把错误
+> 翻译成可读说明，而不是把原始 403 JSON 丢给你。
 
 ---
 
@@ -158,6 +161,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | **Hide report** | 清除报表 widget。 |
 | **Hide / Show footer meter** | 开关 footer 计量（持久化）。 |
 | **Hide / Show web tools** | 开关 `web_search` 与 `web_fetch`（持久化）。 |
+| **Hide / Show free models** | 显示/隐藏免费档（仅 IDE/CLI 可用，持久化）。 |
 
 ---
 
@@ -275,7 +279,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | --- | --- |
 | `No API key found for clinepass` | 执行 `/login` 选 ClinePass，或设置 `CLINE_API_KEY`。 |
 | `401 … re-authenticate your Cline account` | 存储的 token 过期且刷新失败，重新 `cline auth` 或 `/login`。 |
-| 免费模型报 `403 … only available via Cline product surfaces` | Cline 禁止第三方 API 路径使用免费档，改用 `cline-pass/*`。 |
+| 免费模型报 `403 … only available via Cline product surfaces` | Cline 只把免费模型提供给自己的 IDE 扩展与 CLI。请改用 `cline-pass/*`；插件会把这个错误翻译成可读说明。 |
 | 模型的工具列表里没有 `web_search` | 没有 Cline 凭证，或用了 `/clinepass → Hide web tools`，或 `-xt web_search`。 |
 | 会话总额里没有某次搜索 | 账单记录约 12 秒内没刷出来，或该搜索来自另一个 Cline 客户端。 |
 | 套餐额度显示 unavailable | 访问不到用量接口（离线，或尚未登录）。 |
@@ -436,7 +440,8 @@ pi install npm:pi-clinepass-auto@beta
 - **上游路由由网关决定**。渠道偏好是“请求”而不是“命令”：部分模型（如
   `cline-pass/deepseek-v4.1-flash`）由网关自己的路由承接，不会交给客户端。
   插件会把这种情况如实显示为 `no right now` 并附上观测到的事实，而不是假装偏好生效了。
-- **免费档**会在目录中出现，但在 API 路径上被拒绝（见 [模型](#模型)）。
+- **免费档**默认隐藏，且在 API 路径上被网关拒绝（见 [模型](#模型)）；
+  `/clinepass → Show free models` 可以把它注册出来以便查看。
 - 本包与 Cline、pi、models.dev **均无隶属关系**。
 
 ## 许可证

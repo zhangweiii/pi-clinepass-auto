@@ -15,11 +15,21 @@ export interface Prefs {
   meterHidden: boolean;
   /** Hide the web_search / web_fetch tools. */
   webToolsHidden: boolean;
+  /**
+   * Register the free-tier models too. They cannot be used through Cline's
+   * API (only its IDE and CLI), so they are hidden by default.
+   */
+  showFreeModels: boolean;
   /** Upstream channel preference per model id. */
   routes: Record<string, RoutePreference>;
 }
 
-export const DEFAULT_PREFS: Prefs = { meterHidden: false, webToolsHidden: false, routes: {} };
+export const DEFAULT_PREFS: Prefs = {
+  meterHidden: false,
+  webToolsHidden: false,
+  showFreeModels: false,
+  routes: {},
+};
 
 export function prefsPath(): string {
   return join(agentDir(), "clinepass-auto-prefs.json");
@@ -54,6 +64,7 @@ export function parsePrefs(text: string): Prefs {
     return {
       meterHidden: parsed.meterHidden === true,
       webToolsHidden: parsed.webToolsHidden === true,
+      showFreeModels: parsed.showFreeModels === true,
       routes: parseRoutes(parsed.routes),
     };
   } catch {

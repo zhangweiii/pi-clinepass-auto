@@ -9,11 +9,32 @@ import {
   DEFAULT_THINKING_LEVEL_MAP,
   deriveThinkingLevelMap,
   discoverCatalog,
+  explainFreeModelError,
+  isFreeModelId,
   parseCatalogCache,
   parseModelsDev,
   parseRecommendedModels,
   type DevModel,
 } from "../src/discovery.ts";
+
+// ─── Free-tier models ──────────────────────────────────────────────────────
+
+test("isFreeModelId recognises the free-tier prefixes", () => {
+  assert.equal(isFreeModelId("cline-free/mimo-v2.6-flash"), true);
+  assert.equal(isFreeModelId("stealth/pixel-canary"), true);
+  assert.equal(isFreeModelId("cline-pass/glm-5.3"), false);
+  assert.equal(isFreeModelId("z-ai/glm-5.3"), false);
+});
+
+test("explainFreeModelError rewrites Cline's product-surface 403", () => {
+  const raw =
+    '403: {"code":"API_REQUEST_ERROR_CODE","message":"Error 403: cline-free/mimo-v2.6-flash is only available via Cline product surfaces. If you are using an old version of Cline, please update to the latest version"}';
+  const explained = explainFreeModelError(raw);
+  assert.ok(explained?.includes("only work in Cline's own IDE extension and CLI"));
+  assert.ok(explained?.includes("cline-pass/*"));
+  assert.equal(explainFreeModelError("Some unrelated failure"), undefined);
+  assert.equal(explainFreeModelError(""), undefined);
+});
 
 // ─── Recommended models ────────────────────────────────────────────────────
 

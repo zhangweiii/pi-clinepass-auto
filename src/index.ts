@@ -24,7 +24,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { apiBase, getActiveToken, getApiKey, invalidateTokenCache, login, PROVIDER_NAME, refreshToken, resolveCredential } from "./auth.ts";
-import { discoverCatalog, isFreeModelId, loadInitialCatalog, requestSignal, type CatalogEntry } from "./discovery.ts";
+import { discoverCatalog, explainFreeModelError, isFreeModelId, loadInitialCatalog, requestSignal, type CatalogEntry } from "./discovery.ts";
 import { DEFAULT_PREFS, readPrefs, writePrefs, type Prefs } from "./prefs.ts";
 import {
   applyRoutePreference,
@@ -190,10 +190,26 @@ function isClinePassModel(model: { provider?: string } | undefined): boolean {
   return model?.provider === PROVIDER_NAME || model?.provider === FREE_ALIAS;
 }
 
+/**
+ * Free-tier models are registered only when the user asks for them: Cline's
+ * API rejects them ("only available via Cline product surfaces"), so listing
+ * them by default only produces confusing 403s.
+ */
+function visibleModels(models: CatalogEntry[]): CatalogEntry[] {
+  return prefs.showFreeModels ? [...models] : models.filter((model) => !isFreeModelId(model.id));
+}
+
+/** Report note about free models the catalog lists but Cline's API refuses. */
+function hiddenFreeNote(): string | undefined {
+  const hidden = catalogModels.filter((model) => isFreeModelId(model.id)).length;
+  if (hidden === 0) return undefined;
+  return `${hidden} free model(s) hidden — Cline serves them only to its IDE and CLI; /clinepass can list them`;
+}
+
 function toProviderModels(models: CatalogEntry[]): ProviderModelConfig[] {
-  return models.map((model) => ({
+  return visibleModels(models).map((model) => ({
     id: model.id,
-    name: `${model.name}${isFreeModelId(model.id) ? " (Cline Free)" : " (ClinePass)"}`,
+    name: `${model.name}${isFreeModelId(model.id) ? " (Cline Free, IDE/CLI only)" : " (ClinePass)"}`,
     reasoning: model.reasoning,
     ...(model.thinkingLevelMap ? { thinkingLevelMap: { ...model.thinkingLevelMap } } : {}),
     input: [...model.input],
@@ -231,7 +247,7 @@ function providerConfig(models: CatalogEntry[], onLogin: () => void): ProviderCo
         signal: context.signal,
       });
       state.catalog = {
-        size: result.models.length,
+        size: visibleModels(result.models).length,
         source: result.source,
         fetchedAt: result.fetchedAt,
         warnings: result.warnings,
@@ -657,7 +673,10 @@ async function showReport(
     catalogSize: state.catalog.size,
     catalogFetchedAt: state.catalog.fetchedAt,
     catalogSource: state.catalog.source,
-    warnings: state.catalog.warnings,
+    warnings: [
+      ...state.catalog.warnings,
+      ...(prefs.showFreeModels ? [] : [hiddenFreeNote()]),
+    ].filter((warning): warning is string => warning !== undefined),
   });
   if (ctx.hasUI && ctx.ui?.setWidget) {
     ctx.ui.setWidget(REPORT_KEY, lines);
@@ -674,7 +693,7 @@ export default function (pi: ExtensionAPI): void {
   prefs = readPrefs();
   const initial = loadInitialCatalog();
   state.catalog = {
-    size: initial.models.length,
+    size: visibleModels(initial.models).length,
     source: initial.fetchedAt ? "cache" : "seed",
     fetchedAt: initial.fetchedAt,
     warnings: [],
@@ -783,7 +802,13 @@ export default function (pi: ExtensionAPI): void {
     const message = event.message;
     if (message.role !== "assistant") return;
     if (!isClinePassModel({ provider: message.provider })) return;
-    if (message.errorMessage || message.stopReason === "error" || message.stopReason === "aborted") return;
+    if (message.errorMessage) {
+      // Cline answers free models with a 403 that reads like a client bug;
+      // explain what it actually means.
+      const explanation = explainFreeModelError(message.errorMessage);
+      return explanation ? { message: { ...message, errorMessage: explanation } } : undefined;
+    }
+    if (message.stopReason === "error" || message.stopReason === "aborted") return;
     const modelId = message.model;
     const turnStartedAt = message.timestamp || Date.now();
     enqueueTracking(() => trackTurn(pi, ctx, modelId, turnStartedAt));
@@ -810,6 +835,7 @@ export default function (pi: ExtensionAPI): void {
         "Hide report",
         prefs.meterHidden ? "Show footer meter" : "Hide footer meter",
         prefs.webToolsHidden ? "Show web tools" : "Hide web tools",
+        prefs.showFreeModels ? "Hide free models" : "Show free models",
       ];
       const choice = hasUi ? await ctx.ui.select("ClinePass", choices) : choices[0];
       if (!choice) return;
@@ -833,13 +859,13 @@ export default function (pi: ExtensionAPI): void {
 
       if (choice.startsWith("Refresh")) {
         const result = await discoverCatalog({ allowNetwork: true, force: true, signal: ctx.signal });
+        catalogModels = result.models;
         state.catalog = {
-          size: result.models.length,
+          size: visibleModels(result.models).length,
           source: result.source,
           fetchedAt: result.fetchedAt,
           warnings: result.warnings,
         };
-        catalogModels = result.models;
         pi.registerProvider(PROVIDER_NAME, providerConfig(result.models, onLoginSuccess));
         if (hasUi) {
           const suffix = result.warnings.length > 0 ? ` — ${result.warnings.join("; ")}` : "";
@@ -871,6 +897,25 @@ export default function (pi: ExtensionAPI): void {
               ? "Web tools shown."
               : "Web tools shown; web_search stays off until you sign in with /login (ClinePass).";
           ctx.ui.notify(message, "info");
+        }
+        return;
+      }
+
+      if (choice.startsWith("Hide free models") || choice.startsWith("Show free models")) {
+        prefs = { ...prefs, showFreeModels: !prefs.showFreeModels };
+        writePrefs(prefs);
+        pi.registerProvider(PROVIDER_NAME, providerConfig(catalogModels, onLoginSuccess));
+        const freeCount = catalogModels.filter((model) => isFreeModelId(model.id)).length;
+        const message = prefs.showFreeModels
+          ? `Free models listed (${freeCount}). Cline's API only serves them to its IDE and CLI, so calls will explain the 403.`
+          : `Free models hidden (${freeCount} of ${catalogModels.length} catalog models).`;
+        notify(ctx, message, "info");
+        if (!prefs.showFreeModels && isFreeModelId(ctx.model?.id ?? "")) {
+          notify(
+            ctx,
+            `The active model ${ctx.model?.id} is no longer registered — pick another with /model.`,
+            "warning",
+          );
         }
         return;
       }

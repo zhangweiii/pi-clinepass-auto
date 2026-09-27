@@ -96,6 +96,19 @@ export function isFreeModelId(id: string): boolean {
   return FREE_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix));
 }
 
+/**
+ * Rewrite Cline's "product surfaces" 403 into an actionable message. Returns
+ * undefined for every other error, so callers can pass the message through.
+ */
+export function explainFreeModelError(errorMessage: string): string | undefined {
+  if (!/only available via Cline product surfaces/i.test(errorMessage)) return undefined;
+  return [
+    "Cline free models only work in Cline's own IDE extension and CLI:",
+    'their API answers "free model usage is not supported through the Cline API".',
+    "Switch to a cline-pass/* model with /model, or hide free models in /clinepass.",
+  ].join(" ");
+}
+
 /** True for every id this provider registers (paid or free tier). */
 export function isRegisteredModelId(id: string): boolean {
   return id.startsWith(CLINE_PASS_PREFIX) || isFreeModelId(id);

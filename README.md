@@ -82,7 +82,7 @@ report, or `/clinepass` for the menu.
 
 | Feature | Details |
 | --- | --- |
-| Models | `cline-pass/*` plus the free `cline-free/*` / `stealth/*` tiers, refreshed live → [Models](#models) |
+| Models | `cline-pass/*` (plus the IDE/CLI-only free tier, hidden by default), refreshed live → [Models](#models) |
 | Usage meter | Footer meter, `/cline-usage` report, plan windows, per-session persistence → [Usage meter](#usage-meter-and-plan-limits) |
 | Web tools | `web_search` (Cline's Exa-backed search) and `web_fetch` (local, free) → [Web tools](#web-search-and-page-fetching) |
 | Upstream channels | See which upstream serves a model, and set a channel preference → [Upstream channels](#upstream-channels) |
@@ -113,10 +113,14 @@ pi --model clinepass/cline-pass/deepseek-v4.1-flash
 - **Offline-safe**: the last cached catalog (or the bundled seed on a first
   run) is used when the network is unavailable. The provider is never empty.
 
-> Free-tier models (`cline-free/*`, `stealth/*`) are visible in the catalog,
-> but Cline currently rejects them on the API path used by pi with
-> `403 ... only available via Cline product surfaces`. That is a Cline-side
-> restriction; the catalog simply reflects what the account can see.
+> Free-tier models (`cline-free/*`, `stealth/*`) are **hidden by default**.
+> Cline's documentation is explicit: *"Free model usage is not supported through
+> the Cline API. Free models are only available in the Cline IDE Extension and
+> CLI"*, and its gateway answers them with
+> `403 … only available via Cline product surfaces`. `/clinepass → Show free
+> models` registers them anyway (labelled `(Cline Free, IDE/CLI only)`) for
+> inspection; a call that still fails is explained in plain language instead of
+> surfacing the raw 403 JSON.
 
 ---
 
@@ -175,6 +179,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | **Hide report** | Clears the report widget. |
 | **Hide / Show footer meter** | Toggles the footer meter (persisted). |
 | **Hide / Show web tools** | Toggles `web_search` and `web_fetch` (persisted). |
+| **Hide / Show free models** | Registers the free tier (`(Cline Free, IDE/CLI only)`) or hides it (persisted). |
 
 ---
 
@@ -321,6 +326,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | Footer meter missing | The active model is not a `clinepass` model, or the meter is hidden. |
 | `/cline-route` says `no right now` | The gateway is keeping its own channel for that model — some, like `cline-pass/deepseek-v4.1-flash`, are never handed over. The `Why` line shows the evidence; try again later or use another model. |
 | `/cline-route` says `unknown — the probe failed` | The probe request failed (network, or the gateway answered without content). Retry, and check the connection if it keeps failing. |
+| Free model returns `403 … only available via Cline product surfaces` | Cline serves free models only to its IDE extension and CLI. Use a `cline-pass/*` model; the plugin rewrites this error into a readable explanation when it appears. |
 
 ---
 
@@ -504,8 +510,9 @@ Publishing with the `pi-package` keyword is all that is needed for the
   `cline-pass/deepseek-v4.1-flash`) are served from a route the gateway will not
   hand over. The plugin reports that as `no right now` with the observed
   evidence rather than pretending the preference worked.
-- **Free tier** is listed but blocked on the API path (see
-  [Models](#models)).
+- **Free tier** is hidden by default and blocked on the API path (see
+  [Models](#models)); `/clinepass → Show free models` registers it anyway so it
+  can be listed.
 - This package is **not affiliated with** Cline, pi, or models.dev.
 
 ## License
