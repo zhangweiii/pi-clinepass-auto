@@ -64,7 +64,7 @@ pi --model clinepass/cline-pass/glm-5.3     # 用指定模型启动
 当前模型属于 `clinepass` 时，footer 会显示 Cline 的计费数字：
 
 ```
-Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
+Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13% of $50
 ```
 
 `turn` 是最近一次模型请求的成本（pi 自己就把一次模型请求叫一个 turn），`session` 是本次会话
@@ -113,7 +113,7 @@ Cline 在服务端计费，所以本扩展**不做** token 成本估算，而是
 `/usages` 账单流，把你每一轮产生的记录采集进来。
 
 ```
-Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
+Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13% of $50
 ```
 
 | 片段 | 含义 |
@@ -121,7 +121,7 @@ Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
 | `turn` | 最近一次模型请求的成本（pi 把一次模型请求称为一个 turn）。 |
 | `session` | 本会话已采集的全部记录之和，含模型对话**和**网页搜索。 |
 | `(… search)` | 搜索占会话总额的部分；为 $0 时不显示。 |
-| `5h` / `7d` | Cline 报告的套餐窗口用量，具体额度与重置时间见 `/cline-usage`。 |
+| `5h` / `7d` / `30d` | Cline 报告的套餐窗口用量。月度窗口还会带上额度（`30d 13% of $50`）；完整额度与重置时间见 `/cline-usage`。 |
 
 细节：
 

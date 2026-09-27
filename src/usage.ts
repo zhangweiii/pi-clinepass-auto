@@ -360,7 +360,7 @@ export interface MeterState {
   limits?: PlanLimits;
 }
 
-/** One-line footer meter, e.g. `Cline: $0.01 turn · $0.18 session · 5h 12% · 7d 34%`. */
+/** One-line footer meter, e.g. `Cline: $0.01 turn · $0.18 session · 5h 12% · 7d 34% · 30d 13% of $50`. */
 export function formatMeter(state: MeterState): string {
   let session = `${formatUsdCompact(state.sessionUsd)} session`;
   if (state.searchUsd !== undefined && state.searchUsd > 0) {
@@ -370,6 +370,9 @@ export function formatMeter(state: MeterState): string {
   if (state.limits) {
     segments.push(`5h ${Math.round(state.limits.fiveHour.usedPercent)}%`);
     segments.push(`7d ${Math.round(state.limits.sevenDay.usedPercent)}%`);
+    const month = state.limits.thirtyDay;
+    const cap = month.limitUsd !== undefined ? ` of ${formatUsd(month.limitUsd)}` : "";
+    segments.push(`30d ${Math.round(month.usedPercent)}%${cap}`);
   }
   return `Cline: ${segments.join(" · ")}`;
 }

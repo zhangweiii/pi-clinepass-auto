@@ -66,7 +66,7 @@ Or just run `pi` and use `/model` to pick from the list.
 While a `clinepass` model is active, the footer shows what Cline billed:
 
 ```
-Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
+Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13% of $50
 ```
 
 `turn` is the cost of the most recent model request (pi's own definition of a
@@ -125,7 +125,7 @@ estimate token costs. It reads the same `/usages` feed the Cline apps use and
 adopts the records Cline created for your turns.
 
 ```
-Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
+Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13% of $50
 ```
 
 | Element | Meaning |
@@ -133,7 +133,7 @@ Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34%
 | `turn` | The most recent model request (pi calls each model request a turn). |
 | `session` | Sum of every adopted record in this session, chat **and** web search. |
 | `(… search)` | The web-search share of the session total; hidden while it is $0. |
-| `5h` / `7d` | Plan-window utilization reported by Cline, with caps and reset times in `/cline-usage`. |
+| `5h` / `7d` / `30d` | Plan-window utilization reported by Cline. The monthly window also shows its cap (`30d 13% of $50`); full caps and reset times are in `/cline-usage`. |
 
 Notes:
 

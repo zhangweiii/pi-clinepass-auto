@@ -261,11 +261,25 @@ test("formatMeter renders one compact, unboxed line with plan windows", () => {
       planName: "ClinePass",
       fiveHour: { usedPercent: 12.4 },
       sevenDay: { usedPercent: 3.2 },
-      thirtyDay: { usedPercent: 0.5 },
+      thirtyDay: { usedPercent: 13.4, limitUsd: 50 },
     },
   });
-  assert.equal(meter, "Cline: $0.01 turn · $0.50 session · 5h 12% · 7d 3%");
+  assert.equal(meter, "Cline: $0.01 turn · $0.50 session · 5h 12% · 7d 3% · 30d 13% of $50");
   assert.ok(!meter.includes("│"), "meter must not be boxed in box-drawing bars");
+});
+
+test("formatMeter omits the monthly cap when the plan does not report one", () => {
+  const meter = formatMeter({
+    turnUsd: 0,
+    sessionUsd: 0.1,
+    limits: {
+      planName: "ClinePass",
+      fiveHour: { usedPercent: 12 },
+      sevenDay: { usedPercent: 3 },
+      thirtyDay: { usedPercent: 13 },
+    },
+  });
+  assert.equal(meter, "Cline: $0.00 turn · $0.10 session · 5h 12% · 7d 3% · 30d 13%");
 });
 
 test("formatMeter omits plan windows until limits are known", () => {
