@@ -1,0 +1,73 @@
+name: Release
+
+# Publishing is tag driven:
+#   npm version prerelease --preid=beta && git push --follow-tags   -> v0.2.0-beta.0 -> dist-tag "beta"
+#   npm version patch && git push --follow-tags                     -> v0.2.0        -> dist-tag "latest"
+# (npm run release:beta / release:stable wrap the common cases.)
+#
+# Authentication uses npm Trusted Publishing (OIDC): configure the package on
+# npmjs.com under Settings -> Trusted publishing with this repository and
+# workflow file. If you prefer a token instead, add an NPM_TOKEN secret and
+# uncomment the NODE_AUTH_TOKEN env entry below.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # npm provenance / Trusted Publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted Publishing needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: Verify the tag matches package.json
+        run: |
+          PKG_TAG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json ($PKG_TAG). Bump the version with 'npm version' instead of tagging by hand."
+            exit 1
+          fi
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Publish to npm
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "Publishing prerelease $VERSION with dist-tag beta"
+            npm publish --tag beta --provenance --access public
+          else
+            echo "Publishing $VERSION with dist-tag latest"
+            npm publish --tag latest --provenance --access public
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --prerelease
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          fi

@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output and pack artifacts
+dist/
+*.tgz
+
+# Logs and caches
+*.log
+npm-debug.log*
+.npm/
+coverage/
+
+# Local environment and secrets — never commit credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
