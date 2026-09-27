@@ -401,26 +401,27 @@ npm publish --access public   # prompts for your 2FA code
 Then, on npmjs.com → the package → **Settings**:
 
 1. **Trusted publishing** → add GitHub Actions with organization/user
-   `zhangweiii`, repository `pi-clinepass-auto`, workflow filename
-   `release.yml`, and **enable the `npm publish` action** — configurations
-   created after 2026-09-03 default to staged publishing only, which would
-   reject a direct `npm publish`.
+   `zhangweiii`, repository `pi-clinepass-auto`, and workflow filename
+   `release.yml`. Leave **`npm publish` unchecked** — npm's own recommendation
+   is stage-only publishing, so CI can only *stage* a release.
 2. **Publishing access** → *Require two-factor authentication and disallow
-   tokens* — after this, only the trusted workflow can publish.
+   tokens* — after this, only the trusted workflow can stage a release.
 
-Every later release is then just:
+Every release is then two steps: CI stages it, you approve it.
 
 ```sh
-npm run release:beta     # or release:stable
+npm run release:beta        # stages 0.2.0-beta.0 through GitHub Actions
+npm stage list              # find the stage id
+npm stage approve <id>      # prompts for your 2FA code
 ```
 
-Provenance attestations are generated automatically for OIDC publishes from a
-public repository.
+The Actions run summary prints the same instructions. Provenance attestations
+are generated automatically for OIDC publishes from a public repository.
 
-If you would rather approve every release by hand, leave the trusted publisher
-at the default *stage-only* setting, change the workflow to
-`npm stage publish`, and promote a staged version with
-`npm stage approve <id> --otp <code>`.
+If you would rather skip the approval step, check **`npm publish`** in the
+trusted-publisher configuration and change the workflow's `npm stage publish`
+back to `npm publish`. npm considers that weaker: a compromised workflow could
+publish without a human in the loop.
 
 Install a prerelease with a pinned dist-tag:
 

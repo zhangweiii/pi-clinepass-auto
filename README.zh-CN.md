@@ -350,28 +350,31 @@ granular token，所以本仓库只使用
 手动发布**：
 
 ```sh
-npm login
-npm publish --access public   # 会提示输入 2FA 验证码
+# 在你的终端执行，会提示输入 2FA 验证码
+npm publish --access public
 ```
 
 然后在 npmjs.com → 该包 → **Settings**：
 
 1. **Trusted publishing** → 添加 GitHub Actions，填写组织/用户 `zhangweiii`、仓库
-   `pi-clinepass-auto`、工作流文件名 `release.yml`，并**勾选允许 `npm publish`**——
-   2026-09-03 之后新建的配置默认只允许 staged publishing，会导致直接 `npm publish` 被拒。
+   `pi-clinepass-auto`、工作流文件名 `release.yml`，**不要勾选 `npm publish`**——
+   npm 官方推荐只允许 staged publishing，即 CI 只能“暂存”一个版本。
 2. **Publishing access** → 选择 *Require two-factor authentication and disallow tokens*，
-   此后只有这条受信任的工作流能发布。
+   此后只有这条受信任的工作流可以暂存发布。
 
-之后的每次发布只需：
+之后每次发布是两步：CI 暂存，你用 2FA 批准。
 
 ```sh
-npm run release:beta     # 或 release:stable
+npm run release:beta        # 通过 GitHub Actions 暂存 0.2.0-beta.0
+npm stage list              # 查看 stage id
+npm stage approve <id>      # 提示输入 2FA 验证码
 ```
 
-公开仓库通过 OIDC 发布时，provenance 证明会自动生成。
+Actions 运行摘要里会打印同样的指引。公开仓库通过 OIDC 发布时，provenance 证明会自动生成。
 
-如果你希望每次发布都人工复核，可以把 trusted publisher 保持在默认的 *stage-only*，
-把工作流改成 `npm stage publish`，再用 `npm stage approve <id> --otp <code>` 批准。
+如果你希望省掉批准这一步，就在 trusted publisher 配置里勾上 **`npm publish`**，
+并把工作流的 `npm stage publish` 改回 `npm publish`。npm 认为这更弱：工作流一旦被入侵，
+没有人工环节就能直接发布。
 
 安装预发布版本时用 dist-tag 固定：
 

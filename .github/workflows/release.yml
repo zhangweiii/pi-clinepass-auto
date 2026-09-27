@@ -7,14 +7,17 @@ name: Release
 #
 # Authentication uses npm Trusted Publishing (OIDC) — no tokens:
 # on npmjs.com open the package -> Settings -> Trusted publishing and add this
-# repository with the workflow filename "release.yml".
+# repository with the workflow filename "release.yml", leaving "npm publish"
+# UNCHECKED (npm's recommendation: stage-only).
 #
-# Two things to know:
-#   * trusted publishers can only be configured once the package exists, so the
-#     very first version is published manually (see README "Releasing");
-#   * configurations created after 2026-09-03 default to staged publishing —
-#     enable direct "npm publish" in the "Allowed actions" step, or switch this
-#     workflow to `npm stage publish` and approve each release by hand.
+# Because the trust relationship cannot publish directly, this workflow only
+# stages the release; a maintainer promotes it with 2FA:
+#
+#   npm stage list
+#   npm stage approve <stage-id> --otp <code>
+#
+# Trusted publishers can only be configured once a package exists, so the very
+# first version is published by hand (see README "Releasing").
 
 on:
   push:
@@ -55,16 +58,30 @@ jobs:
 
       - run: npm test
 
-      - name: Publish to npm
+      - name: Stage the npm release
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if [[ "$VERSION" == *-* ]]; then
-            echo "Publishing prerelease $VERSION with dist-tag beta"
-            npm publish --tag beta --provenance --access public
+            echo "Staging prerelease $VERSION with dist-tag beta"
+            npm stage publish --tag beta --provenance --access public
           else
-            echo "Publishing $VERSION with dist-tag latest"
-            npm publish --tag latest --provenance --access public
+            echo "Staging $VERSION with dist-tag latest"
+            npm stage publish --tag latest --provenance --access public
           fi
+
+      - name: Approve instructions
+        run: |
+          {
+            echo "### npm release staged — approval required"
+            echo
+            echo "The trusted publisher is stage-only, so nothing is public yet."
+            echo "Promote the staged version with 2FA:"
+            echo
+            echo '```sh'
+            echo "npm stage list"
+            echo "npm stage approve <stage-id> --otp <code>"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create the GitHub release
         env:
