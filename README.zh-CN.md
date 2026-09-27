@@ -80,6 +80,7 @@ Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13%
 | 模型 | `cline-pass/*` 以及免费的 `cline-free/*` / `stealth/*`，实时更新 → [模型](#模型) |
 | 用量表 | footer 计量、`/cline-usage` 报表、套餐窗口、跨会话持久化 → [用量与额度](#用量与额度) |
 | 网页工具 | `web_search`（Cline 的 Exa 搜索）与 `web_fetch`（本地、免费） → [网页工具](#网页搜索与页面抓取) |
+| 上游渠道 | 查看模型由哪个上游服务、并在网关允许时指定渠道 → [上游渠道](#上游渠道) |
 | 命令 | `/clinepass`、`/cline-usage`、`/usage` → [命令与设置](#命令与设置) |
 | 鉴权 | `/login`（复用 Cline CLI 或粘贴 key）、WorkOS token 自动刷新 → [工作原理](#工作原理) |
 
@@ -152,6 +153,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | 菜单项 | 作用 |
 | --- | --- |
 | **Report** | 把上面的报表显示为 widget。 |
+| **Upstream channel…** | 查看某模型的上游渠道；指定 / 清除 / 重新检测。 |
 | **Refresh model catalog** | 强制实时刷新目录并立即重新注册模型。 |
 | **Hide report** | 清除报表 widget。 |
 | **Hide / Show footer meter** | 开关 footer 计量（持久化）。 |
@@ -206,13 +208,46 @@ web_fetch(url, prompt?)
 
 ---
 
+## 上游渠道
+
+每个 ClinePass 模型都会落到若干上游渠道（baseten、fireworks、deepinfra …）之一，由 Cline 的网关决定。
+网关会在每个响应里报告它选了谁，所以插件能把它显示出来——并在网关允许时改变它。
+
+```
+/cline-route                      # 当前模型
+/cline-route cline-pass/glm-5.3   # 指定模型
+/clinepass → Upstream channel…    # 选模型 → 指定 / 清除 / 重新检测
+```
+
+面板**先回答一个问题：这个模型现在能不能设置**，再展示细节：
+
+```
+Upstream  cline-pass/minimax-m3
+Can set   yes — verified with a pinned probe
+Serving   minimax  0.8s
+Channels  minimax · nebius · gmicloud
+Checked   12:41 · 2 probes ≈ $0.0001
+```
+
+- **`Can set` 怎么得出的**：插件发一个“指定到另一个渠道”的极小探针。如果响应真的从那个渠道回来，说明偏好可生效；
+  否则面板显示 `no right now`，并用 `Why` 行说明**观测到的事实**，而不是猜“网关禁止”还是“暂时锁定”。
+- **并非所有模型都能指定**。路由属于 Cline 网关，它会把部分模型固定在自己的路由上——例如
+  `cline-pass/deepseek-v4.1-flash` 由厂商自营端点承接。这类模型会显示 `no right now`，插件不会假装成功。
+- **偏好会随每个请求携带**，即使网关的粘性（affinity）漂移也会持续生效。暂时不生效也可以保存：
+  插件会在会话启动时重新检测，并在开始生效时通知你。
+- **成本**：一次检测是 2（偶尔 3）个关闭推理的极小探针，约 2 秒、约 **$0.0001** 订阅额度。结果缓存 10 分钟，
+  这期间再打开面板不再消耗。
+- **`/cline-usage`** 会用一行 `Route` 打印缓存的结果。
+- 偏好保存在 `clinepass-auto-prefs.json` 的 `routes` 字段。
+
 ## 命令与设置
 
 ### 斜杠命令
 
 | 命令 | 说明 |
 | --- | --- |
-| `/clinepass` | 菜单：报表、目录刷新、计量与网页工具开关。 |
+| `/clinepass` | 菜单：报表、上游渠道、目录刷新、计量与网页工具开关。 |
+| `/cline-route` | 查看指定模型的上游渠道，以及能否指定。 |
 | `/cline-usage` | 打印用量/额度报表（不占 footer）。 |
 | `/usage` | `/cline-usage` 的别名。 |
 | `/login` | 登录——选择 **ClinePass**。 |
@@ -245,6 +280,8 @@ web_fetch(url, prompt?)
 | 会话总额里没有某次搜索 | 账单记录约 12 秒内没刷出来，或该搜索来自另一个 Cline 客户端。 |
 | 套餐额度显示 unavailable | 访问不到用量接口（离线，或尚未登录）。 |
 | footer 计量不显示 | 当前模型不是 `clinepass`，或计量被隐藏了。 |
+| `/cline-route` 显示 `no right now` | 网关为该模型保留了自己的渠道——例如 `cline-pass/deepseek-v4.1-flash` 从不交给客户端。`Why` 行给出观测到的事实；可稍后再试或换模型。 |
+| `/cline-route` 显示 `unknown — the probe failed` | 探针请求失败（网络，或网关返回了空内容）。重试即可；持续失败时检查网络。 |
 
 ---
 
@@ -396,6 +433,9 @@ pi install npm:pi-clinepass-auto@beta
   `web_fetch` 完全不访问 Cline 的接口。
 - **计费延迟**：Cline 约 12 秒内没刷出的记录不会被计入；`--print` 模式下进程可能在最后一条记录
   被采集前就退出，所以以交互式会话里的 footer 为准。
+- **上游路由由网关决定**。渠道偏好是“请求”而不是“命令”：部分模型（如
+  `cline-pass/deepseek-v4.1-flash`）由网关自己的路由承接，不会交给客户端。
+  插件会把这种情况如实显示为 `no right now` 并附上观测到的事实，而不是假装偏好生效了。
 - **免费档**会在目录中出现，但在 API 路径上被拒绝（见 [模型](#模型)）。
 - 本包与 Cline、pi、models.dev **均无隶属关系**。
 

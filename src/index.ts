@@ -23,9 +23,23 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import { apiBase, getActiveToken, getApiKey, login, PROVIDER_NAME, refreshToken, resolveCredential } from "./auth.ts";
-import { discoverCatalog, isFreeModelId, loadInitialCatalog, type CatalogEntry } from "./discovery.ts";
+import { apiBase, getActiveToken, getApiKey, invalidateTokenCache, login, PROVIDER_NAME, refreshToken, resolveCredential } from "./auth.ts";
+import { discoverCatalog, isFreeModelId, loadInitialCatalog, requestSignal, type CatalogEntry } from "./discovery.ts";
 import { DEFAULT_PREFS, readPrefs, writePrefs, type Prefs } from "./prefs.ts";
+import {
+  applyRoutePreference,
+  buildProbeBody,
+  buildRouteLines,
+  capabilityHint,
+  judgeCapability,
+  mergeChannelLists,
+  orderChannels,
+  parseRoutingFacts,
+  summarizeRoute,
+  type RouteCapability,
+  type RoutePreference,
+  type RoutingFacts,
+} from "./routes.ts";
 import {
   buildReportLines,
   collectTurnRecords,
@@ -43,7 +57,18 @@ import { applyWebToolActivation, registerWebTools } from "./webtools.ts";
 
 const STATUS_KEY = "clinepass-usage";
 const REPORT_KEY = "clinepass-report";
+const ROUTE_KEY = "clinepass-route";
 const FREE_ALIAS = "cline-pass";
+
+/** Catalog prefix of the subscription models. */
+const PAID_PREFIX = "cline-pass/";
+
+/** Upstream-channel inspection. */
+const ROUTE_CHAT_PATH = "/api/v1/chat/completions";
+const ROUTE_PROBE_TIMEOUT_MS = 30_000;
+const ROUTE_PROBE_ATTEMPTS = 3;
+const ROUTE_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROUTE_PROBE_COST_LABEL = "$0.0001";
 
 /** Poll attempts while Cline's billing pipeline flushes the turn record. */
 const TRACK_ATTEMPTS = 5;
@@ -79,6 +104,25 @@ const state: SessionState = {
   searches: 0,
   catalog: { size: 0, source: "seed", warnings: [] },
 };
+
+/** Models the last catalog refresh registered, for the channel model picker. */
+let catalogModels: CatalogEntry[] = [];
+
+/** Result of one upstream-channel inspection, cached per model. */
+interface RouteInspection {
+  model: string;
+  /** Routing facts observed while the stored preference was in effect. */
+  facts: RoutingFacts;
+  capability: RouteCapability;
+  /** True when the serving channel is the preferred one. */
+  active: boolean;
+  /** Why a preference is not taking effect, from the unpinned observation. */
+  hint?: string;
+  preference?: RoutePreference;
+  at: number;
+}
+
+const routeCache = new Map<string, RouteInspection>();
 
 /** 跨会话保留的显示偏好；默认显示 meter。 */
 let prefs: Prefs = { ...DEFAULT_PREFS };
@@ -192,6 +236,7 @@ function providerConfig(models: CatalogEntry[], onLogin: () => void): ProviderCo
         fetchedAt: result.fetchedAt,
         warnings: result.warnings,
       };
+      catalogModels = result.models;
       return toProviderModels(result.models);
     },
   };
@@ -226,6 +271,266 @@ async function refreshLimits(ctx: ExtensionContext): Promise<void> {
   const limits = await fetchPlanLimits().catch(() => undefined);
   if (limits) state.limits = limits;
   renderMeter(ctx);
+}
+
+// ─── Upstream channels ─────────────────────────────────────────────────────
+
+function parseJsonText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
+  try {
+    ctx.ui?.notify?.(message, level);
+  } catch {
+    // Session replaced or shut down.
+  }
+}
+
+/**
+ * Send one cheap probe and read the gateway's routing facts. Retries because
+ * the gateway occasionally answers a tiny completion with an empty body.
+ */
+async function probeModelRoute(
+  model: string,
+  pin: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<RoutingFacts | undefined> {
+  const token = await getActiveToken({ signal }).catch(() => undefined);
+  if (!token) return undefined;
+
+  for (let attempt = 0; attempt < ROUTE_PROBE_ATTEMPTS; attempt += 1) {
+    const { signal: requestAbort, cleanup } = requestSignal(signal, ROUTE_PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${apiBase()}${ROUTE_CHAT_PATH}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "pi-clinepass-auto",
+        },
+        body: JSON.stringify(buildProbeBody(model, pin)),
+        signal: requestAbort,
+      });
+      const text = await response.text();
+      if (response.status === 401) {
+        invalidateTokenCache();
+        return undefined;
+      }
+      const facts = parseRoutingFacts(parseJsonText(text));
+      if (facts) return facts;
+    } catch {
+      // Transient network or timeout: try again.
+    } finally {
+      cleanup();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Inspect one model: probe with the stored preference (if any), then probe a
+ * different available channel to learn whether a preference can take effect.
+ */
+async function inspectModelRoute(
+  model: string,
+  signal?: AbortSignal,
+): Promise<RouteInspection | undefined> {
+  const preference = prefs.routes[model];
+  const preferred = preference?.only[0];
+
+  // Unpinned first: it reports the widest channel list, which the picker needs
+  // even when a preference narrows the gateway's answer down to one channel.
+  const defaultFacts = await probeModelRoute(model, undefined, signal);
+  if (!defaultFacts) return undefined;
+
+  let serving = defaultFacts;
+  if (preferred !== undefined && preferred !== defaultFacts.finalProvider) {
+    const pinnedFacts = await probeModelRoute(model, preferred, signal);
+    if (pinnedFacts) serving = pinnedFacts;
+  }
+  const active = preferred !== undefined && serving.finalProvider === preferred;
+
+  let capability: RouteCapability = judgeCapability({ preferenceActive: active });
+  if (!active) {
+    const channels = mergeChannelLists(defaultFacts, serving);
+    const candidate = channels.find((name) => name !== preferred && name !== serving.finalProvider);
+    if (candidate) {
+      const facts = await probeModelRoute(model, candidate, signal);
+      if (facts?.finalProvider === candidate) {
+        capability = judgeCapability({ preferenceActive: false, honoredPin: true });
+      }
+    }
+  }
+
+  const inspection: RouteInspection = {
+    model,
+    facts: { ...serving, fallbacksAvailable: mergeChannelLists(defaultFacts, serving) },
+    capability,
+    active,
+    ...(capability === "not-pinnable" ? { hint: capabilityHint(serving) } : {}),
+    ...(preference ? { preference } : {}),
+    at: Date.now(),
+  };
+  routeCache.set(model, inspection);
+  return inspection;
+}
+
+function clockLabel(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderRouteWidget(ctx: ExtensionContext, inspection: RouteInspection, warning?: string): void {
+  const lines = buildRouteLines({
+    model: inspection.model,
+    facts: inspection.facts,
+    capability: inspection.capability,
+    ...(inspection.preference ? { preference: inspection.preference } : {}),
+    active: inspection.active,
+    checkedLabel: clockLabel(inspection.at),
+    costLabel: ROUTE_PROBE_COST_LABEL,
+    ...(inspection.hint ? { hint: inspection.hint } : {}),
+    ...(warning ? { warning } : {}),
+  });
+  if (!ctx.hasUI) {
+    console.log(`\n${lines.join("\n")}\n`);
+    return;
+  }
+  try {
+    ctx.ui?.setWidget?.(ROUTE_KEY, lines);
+  } catch {
+    // Session replaced or shut down while probing.
+  }
+}
+
+function showRouteNotice(ctx: ExtensionContext, lines: string[]): void {
+  if (!ctx.hasUI) {
+    console.log(`\n${lines.join("\n")}\n`);
+    return;
+  }
+  try {
+    ctx.ui?.setWidget?.(ROUTE_KEY, lines);
+  } catch {
+    // Session replaced or shut down.
+  }
+}
+
+/** Inspect a model and render the panel, reusing the cache while it is fresh. */
+async function showRoutePanel(
+  ctx: ExtensionCommandContext,
+  model: string,
+  options: { force?: boolean } = {},
+): Promise<RouteInspection | undefined> {
+  const cached = routeCache.get(model);
+  const fresh = cached !== undefined && Date.now() - cached.at < ROUTE_CACHE_TTL_MS;
+  if (fresh && !options.force) {
+    renderRouteWidget(ctx, cached);
+    return cached;
+  }
+
+  if (ctx.hasUI) {
+    showRouteNotice(ctx, [
+      `Upstream  ${model}`,
+      `Can set   checking… (2 probes ≈ ${ROUTE_PROBE_COST_LABEL})`,
+    ]);
+  }
+  const inspection = await inspectModelRoute(model, ctx.signal);
+  if (!inspection) {
+    if (cached) {
+      renderRouteWidget(ctx, cached, "Re-check failed — showing the previous result.");
+    } else {
+      showRouteNotice(ctx, [
+        `Upstream  ${model}`,
+        "Can set   unknown — the probe failed (network or gateway error)",
+        "Note      Retry with /cline-route, or check the connection.",
+      ]);
+    }
+    return undefined;
+  }
+  renderRouteWidget(ctx, inspection);
+  return inspection;
+}
+
+/** Subscription models only: free-tier ids are rejected on the API path. */
+function routeModels(): CatalogEntry[] {
+  return catalogModels.filter((entry) => entry.id.startsWith(PAID_PREFIX));
+}
+
+/** Ask which ClinePass model to inspect (the active one first). */
+async function pickRouteModel(ctx: ExtensionCommandContext): Promise<string | undefined> {
+  const ids = routeModels().map((entry) => entry.id);
+  if (ids.length === 0) return undefined;
+  const activeId = ctx.model?.id;
+  const ordered = activeId && ids.includes(activeId) ? [activeId, ...ids.filter((id) => id !== activeId)] : ids;
+  const options = ordered.map((id) => (id === activeId ? `${id}  (active)` : id));
+  const pick = await ctx.ui.select("ClinePass model", [...options, "Cancel"]);
+  if (!pick || pick === "Cancel") return undefined;
+  return pick.replace(/\s+\(active\)$/, "");
+}
+
+/** Save, clear, or re-check one model's channel preference. */
+async function routeMenu(ctx: ExtensionCommandContext, model: string): Promise<void> {
+  const inspection = await showRoutePanel(ctx, model);
+  if (!inspection) return;
+
+  const actions = [
+    "Set channel…",
+    ...(inspection.preference ? ["Clear preference"] : []),
+    "Check again",
+    "Close",
+  ];
+  const action = await ctx.ui.select(`Upstream — ${model}`, actions);
+  if (!action || action === "Close") return;
+
+  if (action === "Check again") {
+    await showRoutePanel(ctx, model, { force: true });
+    return;
+  }
+
+  if (action === "Clear preference") {
+    const routes = { ...prefs.routes };
+    delete routes[model];
+    prefs = { ...prefs, routes };
+    writePrefs(prefs);
+    routeCache.delete(model);
+    const cleared = await showRoutePanel(ctx, model, { force: true });
+    notify(ctx, `Upstream for ${model} back to automatic (${cleared?.facts.finalProvider ?? "unknown"}).`, "info");
+    return;
+  }
+
+  const channels = orderChannels(inspection.facts);
+  const options = channels.map((name) =>
+    name === inspection.facts.finalProvider ? `${name}  (serving now)` : name,
+  );
+  const pick = await ctx.ui.select(`Upstream channel for ${model}`, [...options, "Cancel"]);
+  if (!pick || pick === "Cancel") return;
+  const channel = pick.replace(/\s+\(serving now\)$/, "");
+
+  if (inspection.capability !== "pinnable") {
+    const proceed = await ctx.ui.confirm(
+      "The gateway may ignore this",
+      `This model does not accept a client-side channel right now. ${capabilityHint(inspection.facts)}\n\nSave "${channel}" anyway? It is sent with every request and applies as soon as the gateway allows it.`,
+    );
+    if (!proceed) return;
+  }
+
+  prefs = { ...prefs, routes: { ...prefs.routes, [model]: { only: [channel] } } };
+  writePrefs(prefs);
+
+  const verified = await inspectModelRoute(model, ctx.signal);
+  if (verified) renderRouteWidget(ctx, verified);
+  const serving = verified?.facts.finalProvider ?? "unknown";
+  notify(
+    ctx,
+    verified?.active
+      ? `Upstream for ${model} pinned to ${channel} (verified).`
+      : `Saved ${channel} for ${model}; the gateway still serves ${serving} — it will apply once the gateway allows it.`,
+    verified?.active ? "info" : "warning",
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -331,12 +636,24 @@ async function showReport(
       : Promise.resolve(undefined),
   ]);
   if (limits) state.limits = limits;
+  const activeModel = ctx.model?.id;
+  const inspection = activeModel ? routeCache.get(activeModel) : undefined;
+  const route = inspection
+    ? summarizeRoute({
+        model: inspection.model,
+        facts: inspection.facts,
+        capability: inspection.capability,
+        active: inspection.active,
+        ...(inspection.preference ? { preference: inspection.preference } : {}),
+      })
+    : undefined;
   const lines = buildReportLines({
     limits,
     sessionUsd: state.sessionUsd,
     turns: state.turns,
     searches: state.searches,
     searchUsd: state.searchUsd,
+    ...(route ? { route } : {}),
     catalogSize: state.catalog.size,
     catalogFetchedAt: state.catalog.fetchedAt,
     catalogSource: state.catalog.source,
@@ -371,7 +688,45 @@ export default function (pi: ExtensionAPI): void {
   };
 
   registerWebTools(pi, { onSearchRequest: recordSearchWindow });
+  catalogModels = initial.models;
   pi.registerProvider(PROVIDER_NAME, providerConfig(initial.models, onLoginSuccess));
+
+  // Channel preferences ride on every provider request, so a pin keeps
+  // applying even after the gateway's affinity drifts away from it.
+  pi.on("before_provider_request", (event) => {
+    const payload = event.payload;
+    const model =
+      typeof payload === "object" && payload !== null ? (payload as { model?: unknown }).model : undefined;
+    if (typeof model !== "string") return;
+    const preference = prefs.routes[model];
+    if (!preference) return;
+    return applyRoutePreference(payload, preference);
+  });
+
+  pi.registerCommand("cline-route", {
+    description: "Show which upstream channel serves a ClinePass model, and whether it can be pinned",
+    handler: async (args, ctx) => {
+      const requested = args.trim();
+      const model = requested || ctx.model?.id;
+      if (!model) {
+        notify(ctx, "No model selected — pass a model id, e.g. /cline-route cline-pass/glm-5.3", "warning");
+        return;
+      }
+      if (!routeModels().some((entry) => entry.id === model)) {
+        const hint = requested
+          ? `Unknown subscription model "${model}".`
+          : `The active model (${model}) is not a ClinePass subscription model.`;
+        notify(ctx, `${hint} Try: /cline-route cline-pass/glm-5.3`, "warning");
+        showRouteNotice(ctx, [
+          `Upstream  ${model}`,
+          "Can set   unknown — not a ClinePass subscription model",
+          "Note      Use /cline-route cline-pass/… or switch models.",
+        ]);
+        return;
+      }
+      await showRoutePanel(ctx, model);
+    },
+  });
 
   pi.on("session_start", (_event, ctx) => {
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
@@ -389,6 +744,19 @@ export default function (pi: ExtensionAPI): void {
     loginGranted = false;
     webToolsRemovedByExtension.clear();
     syncWebToolActivation(pi);
+
+    // A saved channel preference may start working once the gateway's
+    // affinity frees up; re-check the active model quietly and tell the user
+    // only when it starts taking effect.
+    const pinnedModel = ctx.model?.id;
+    if (pinnedModel && prefs.routes[pinnedModel]) {
+      const before = routeCache.get(pinnedModel);
+      void (async () => {
+        const inspection = await inspectModelRoute(pinnedModel, ctx.signal).catch(() => undefined);
+        if (!inspection?.active || before?.active) return;
+        notify(ctx, `Upstream for ${pinnedModel} is now ${inspection.facts.finalProvider} — your channel preference is taking effect.`, "info");
+      })();
+    }
 
     // Seed the adoption cursor with the newest existing record so turns
     // from previous sessions (already summed from entries) are not re-billed.
@@ -425,7 +793,9 @@ export default function (pi: ExtensionAPI): void {
     sessionReady = false;
     webToolsRemovedByExtension.clear();
     searchWindows.length = 0;
+    routeCache.clear();
     ctx.ui?.setStatus?.(STATUS_KEY, undefined);
+    ctx.ui?.setWidget?.(ROUTE_KEY, undefined);
     ctx.ui?.setWidget?.(REPORT_KEY, undefined);
   });
 
@@ -435,6 +805,7 @@ export default function (pi: ExtensionAPI): void {
       const hasUi = Boolean(ctx.hasUI && ctx.ui?.select);
       const choices = [
         "Report — usage, limits, catalog",
+        "Upstream channel…",
         "Refresh model catalog",
         "Hide report",
         prefs.meterHidden ? "Show footer meter" : "Hide footer meter",
@@ -448,6 +819,18 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
+      if (choice.startsWith("Upstream channel")) {
+        if (!hasUi) {
+          const model = ctx.model?.id;
+          if (model) await showRoutePanel(ctx, model);
+          return;
+        }
+        const model = await pickRouteModel(ctx);
+        if (!model) return;
+        await routeMenu(ctx, model);
+        return;
+      }
+
       if (choice.startsWith("Refresh")) {
         const result = await discoverCatalog({ allowNetwork: true, force: true, signal: ctx.signal });
         state.catalog = {
@@ -456,6 +839,7 @@ export default function (pi: ExtensionAPI): void {
           fetchedAt: result.fetchedAt,
           warnings: result.warnings,
         };
+        catalogModels = result.models;
         pi.registerProvider(PROVIDER_NAME, providerConfig(result.models, onLoginSuccess));
         if (hasUi) {
           const suffix = result.warnings.length > 0 ? ` — ${result.warnings.join("; ")}` : "";

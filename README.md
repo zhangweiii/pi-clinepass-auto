@@ -17,6 +17,7 @@ pi install npm:pi-clinepass-auto
 - **Live model catalog** — new ClinePass models appear without a package update.
 - **Server-truth usage meter** — the footer shows what Cline actually billed.
 - **Web tools** — `web_search` and `web_fetch`, billed to the same subscription.
+- **Upstream channels** — see which channel serves a model, and set it when the gateway allows it.
 - **Zero configuration** — reuses an existing Cline CLI login if you have one.
 
 ---
@@ -84,6 +85,7 @@ report, or `/clinepass` for the menu.
 | Models | `cline-pass/*` plus the free `cline-free/*` / `stealth/*` tiers, refreshed live → [Models](#models) |
 | Usage meter | Footer meter, `/cline-usage` report, plan windows, per-session persistence → [Usage meter](#usage-meter-and-plan-limits) |
 | Web tools | `web_search` (Cline's Exa-backed search) and `web_fetch` (local, free) → [Web tools](#web-search-and-page-fetching) |
+| Upstream channels | See which upstream serves a model, and set a channel preference → [Upstream channels](#upstream-channels) |
 | Commands | `/clinepass`, `/cline-usage`, `/usage` → [Reference](#commands-and-settings) |
 | Auth | `/login` (Cline CLI reuse or API key), automatic WorkOS token refresh → [How it works](#how-it-works) |
 
@@ -168,6 +170,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | Item | Effect |
 | --- | --- |
 | **Report** | Renders the report above as a widget. |
+| **Upstream channel…** | Inspect a model's upstream channel; set, clear, or re-check a preference. |
 | **Refresh model catalog** | Forces a live catalog refresh and re-registers models. |
 | **Hide report** | Clears the report widget. |
 | **Hide / Show footer meter** | Toggles the footer meter (persisted). |
@@ -233,13 +236,57 @@ itself.
 
 ---
 
+## Upstream channels
+
+Every ClinePass model is served by one of several upstream channels (baseten,
+fireworks, deepinfra, …) and Cline's gateway picks which one. The gateway
+reports its choice in every response, so the plugin can show it — and, where the
+gateway allows it, change it.
+
+```
+/cline-route                      # the current model
+/cline-route cline-pass/glm-5.3   # a specific model
+/clinepass → Upstream channel…    # pick a model, then set / clear / re-check
+```
+
+The panel answers one question first — **can this model be set right now?** —
+and only then shows the details:
+
+```
+Upstream  cline-pass/minimax-m3
+Can set   yes — verified with a pinned probe
+Serving   minimax  0.8s
+Channels  minimax · nebius · gmicloud
+Checked   12:41 · 2 probes ≈ $0.0001
+```
+
+- **How `Can set` is decided.** The plugin sends a tiny probe pinned to a
+  channel other than the one serving the model. If the answer comes back on the
+  requested channel, a preference takes effect. If not, the panel says
+  `no right now` and explains the observed evidence on a `Why` line instead of
+  guessing whether the gateway forbids it or is holding on to its channel.
+- **Not every model allows it.** Routing belongs to Cline's gateway, and it
+  keeps some models on its own route — for example
+  `cline-pass/deepseek-v4.1-flash`, which is served by the vendor's own
+  endpoint. Those report `no right now`; the plugin never pretends otherwise.
+- **A preference is sent with every request**, so it keeps applying even after
+  the gateway's sticky affinity drifts away. Saving one that is not effective
+  yet is fine: the plugin re-checks when a session starts and tells you when it
+  starts working.
+- **Cost.** One check is two (sometimes three) tiny probes with reasoning
+  disabled: about two seconds and roughly $0.0001 of plan quota. Results are
+  cached for ten minutes, so re-opening the panel inside that window is free.
+- **The `/cline-usage` report** prints the cached result as a `Route` line.
+- Preferences live in `clinepass-auto-prefs.json` under `routes`.
+
 ## Commands and settings
 
 ### Slash commands
 
 | Command | Description |
 | --- | --- |
-| `/clinepass` | Menu: report, catalog refresh, meter and web-tool toggles. |
+| `/clinepass` | Menu: report, upstream channel, catalog refresh, meter and web-tool toggles. |
+| `/cline-route` | Show the upstream channel of a model and whether it can be set. |
 | `/cline-usage` | Print the usage/limits report (no footer). |
 | `/usage` | Alias of `/cline-usage`. |
 | `/login` | Sign in — select **ClinePass**. |
@@ -272,6 +319,8 @@ itself.
 | The session total does not include a search | The billing record had not been flushed within ~12 s, or the search was made by another Cline client. |
 | Plan limits show “unavailable” | The usage API could not be reached (offline, or not signed in yet). |
 | Footer meter missing | The active model is not a `clinepass` model, or the meter is hidden. |
+| `/cline-route` says `no right now` | The gateway is keeping its own channel for that model — some, like `cline-pass/deepseek-v4.1-flash`, are never handed over. The `Why` line shows the evidence; try again later or use another model. |
+| `/cline-route` says `unknown — the probe failed` | The probe request failed (network, or the gateway answered without content). Retry, and check the connection if it keeps failing. |
 
 ---
 
@@ -450,6 +499,11 @@ Publishing with the `pi-package` keyword is all that is needed for the
 - **Billing latency.** A record that Cline has not flushed within ~12 s is not
   counted. In `--print` mode the process can exit before the final record is
   adopted, so the footer in an interactive session is the accurate view.
+- **Upstream routing belongs to the gateway.** A channel preference is a
+  request, not a command: some models (for example
+  `cline-pass/deepseek-v4.1-flash`) are served from a route the gateway will not
+  hand over. The plugin reports that as `no right now` with the observed
+  evidence rather than pretending the preference worked.
 - **Free tier** is listed but blocked on the API path (see
   [Models](#models)).
 - This package is **not affiliated with** Cline, pi, or models.dev.

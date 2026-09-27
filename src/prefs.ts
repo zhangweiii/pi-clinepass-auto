@@ -8,15 +8,18 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { agentDir } from "./discovery.ts";
+import type { RoutePreference } from "./routes.ts";
 
 export interface Prefs {
   /** Hide the footer usage meter even while a ClinePass model is active. */
   meterHidden: boolean;
   /** Hide the web_search / web_fetch tools. */
   webToolsHidden: boolean;
+  /** Upstream channel preference per model id. */
+  routes: Record<string, RoutePreference>;
 }
 
-export const DEFAULT_PREFS: Prefs = { meterHidden: false, webToolsHidden: false };
+export const DEFAULT_PREFS: Prefs = { meterHidden: false, webToolsHidden: false, routes: {} };
 
 export function prefsPath(): string {
   return join(agentDir(), "clinepass-auto-prefs.json");
@@ -26,6 +29,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Keep only well-formed channel preferences. */
+export function parseRoutes(value: unknown): Record<string, RoutePreference> {
+  const routes: Record<string, RoutePreference> = {};
+  if (!isRecord(value)) return routes;
+  for (const [model, raw] of Object.entries(value)) {
+    if (!isRecord(raw)) continue;
+    const only = Array.isArray(raw.only)
+      ? raw.only
+          .filter((name): name is string => typeof name === "string")
+          .map((name) => name.trim())
+          .filter(Boolean)
+      : [];
+    if (!model.trim() || only.length === 0) continue;
+    routes[model] = raw.mode === "preferred" ? { only, mode: "preferred" } : { only };
+  }
+  return routes;
+}
+
 export function parsePrefs(text: string): Prefs {
   try {
     const parsed: unknown = JSON.parse(text);
@@ -33,6 +54,7 @@ export function parsePrefs(text: string): Prefs {
     return {
       meterHidden: parsed.meterHidden === true,
       webToolsHidden: parsed.webToolsHidden === true,
+      routes: parseRoutes(parsed.routes),
     };
   } catch {
     return { ...DEFAULT_PREFS };

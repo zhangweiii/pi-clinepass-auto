@@ -395,6 +395,8 @@ export interface ReportInput {
   turns: number;
   searches: number;
   searchUsd: number;
+  /** One-line upstream-channel summary, shown when an inspection is cached. */
+  route?: string;
   catalogSize: number;
   catalogFetchedAt?: number;
   catalogSource: string;
@@ -420,6 +422,7 @@ export function buildReportLines(input: ReportInput): string[] {
       `Search   ${input.searches} web search${input.searches === 1 ? "" : "es"} (${formatUsd(input.searchUsd)}, included above)`,
     );
   }
+  if (input.route) lines.push(`Route    ${input.route}`);
   const updated = input.catalogFetchedAt
     ? new Date(input.catalogFetchedAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" })
     : "bundled seed";

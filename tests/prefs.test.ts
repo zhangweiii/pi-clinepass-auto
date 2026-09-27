@@ -8,22 +8,37 @@ import { DEFAULT_PREFS, parsePrefs, prefsPath, readPrefs, writePrefs } from "../
 // ─── Parsing ───────────────────────────────────────────────────────────────
 
 test("parsePrefs tolerates malformed input", () => {
-  assert.deepEqual(parsePrefs("not json"), { meterHidden: false, webToolsHidden: false });
-  assert.deepEqual(parsePrefs("[]"), { meterHidden: false, webToolsHidden: false });
-  assert.deepEqual(parsePrefs("null"), { meterHidden: false, webToolsHidden: false });
-  assert.deepEqual(parsePrefs("{}"), { meterHidden: false, webToolsHidden: false });
+  const empty = { meterHidden: false, webToolsHidden: false, routes: {} };
+  assert.deepEqual(parsePrefs("not json"), empty);
+  assert.deepEqual(parsePrefs("[]"), empty);
+  assert.deepEqual(parsePrefs("null"), empty);
+  assert.deepEqual(parsePrefs("{}"), empty);
 });
 
 test("parsePrefs only accepts a literal true for meterHidden", () => {
-  assert.deepEqual(parsePrefs('{"meterHidden":true}'), { meterHidden: true, webToolsHidden: false });
-  assert.deepEqual(parsePrefs('{"meterHidden":"true"}'), { meterHidden: false, webToolsHidden: false });
-  assert.deepEqual(parsePrefs('{"meterHidden":1}'), { meterHidden: false, webToolsHidden: false });
+  assert.deepEqual(parsePrefs('{"meterHidden":true}'), { meterHidden: true, webToolsHidden: false, routes: {} });
+  assert.deepEqual(parsePrefs('{"meterHidden":"true"}'), { meterHidden: false, webToolsHidden: false, routes: {} });
+  assert.deepEqual(parsePrefs('{"meterHidden":1}'), { meterHidden: false, webToolsHidden: false, routes: {} });
 });
 
 test("parsePrefs only accepts a literal true for webToolsHidden", () => {
-  assert.deepEqual(parsePrefs('{"webToolsHidden":true}'), { meterHidden: false, webToolsHidden: true });
-  assert.deepEqual(parsePrefs('{"webToolsHidden":"yes"}'), { meterHidden: false, webToolsHidden: false });
-  assert.deepEqual(parsePrefs('{"webToolsHidden":0}'), { meterHidden: false, webToolsHidden: false });
+  assert.deepEqual(parsePrefs('{"webToolsHidden":true}'), { meterHidden: false, webToolsHidden: true, routes: {} });
+  assert.deepEqual(parsePrefs('{"webToolsHidden":"yes"}'), { meterHidden: false, webToolsHidden: false, routes: {} });
+  assert.deepEqual(parsePrefs('{"webToolsHidden":0}'), { meterHidden: false, webToolsHidden: false, routes: {} });
+});
+
+test("parseRoutes keeps only well-formed channel preferences", () => {
+  assert.deepEqual(parsePrefs('{"routes":{"cline-pass/minimax-m3":{"only":[" nebius ","",42]}}}').routes, {
+    "cline-pass/minimax-m3": { only: ["nebius"] },
+  });
+  assert.deepEqual(
+    parsePrefs('{"routes":{"m":{"only":["a"],"mode":"preferred"}}}').routes,
+    { m: { only: ["a"], mode: "preferred" } },
+  );
+  assert.deepEqual(parsePrefs('{"routes":{"m":{"only":["a"],"mode":"nonsense"}}}').routes, { m: { only: ["a"] } });
+  assert.deepEqual(parsePrefs('{"routes":{"m":{"only":[]}}}').routes, {});
+  assert.deepEqual(parsePrefs('{"routes":{"m":"nebius"}}').routes, {});
+  assert.deepEqual(parsePrefs('{"routes":"nope"}').routes, {});
 });
 
 // ─── Disk round-trip ───────────────────────────────────────────────────────
@@ -41,10 +56,14 @@ test("writePrefs round-trips through readPrefs", () => {
   const dir = mkdtempSync(join(tmpdir(), "clinepass-prefs-"));
   try {
     const path = join(dir, "nested", "prefs.json");
-    writePrefs({ meterHidden: true, webToolsHidden: false }, path);
-    assert.deepEqual(readPrefs(path), { meterHidden: true, webToolsHidden: false });
-    writePrefs({ meterHidden: false, webToolsHidden: true }, path);
-    assert.deepEqual(readPrefs(path), { meterHidden: false, webToolsHidden: true });
+    writePrefs({ meterHidden: true, webToolsHidden: false, routes: {} }, path);
+    assert.deepEqual(readPrefs(path), { meterHidden: true, webToolsHidden: false, routes: {} });
+    writePrefs({ meterHidden: false, webToolsHidden: true, routes: { m: { only: ["nebius"] } } }, path);
+    assert.deepEqual(readPrefs(path), {
+      meterHidden: false,
+      webToolsHidden: true,
+      routes: { m: { only: ["nebius"] } },
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
