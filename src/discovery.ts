@@ -287,6 +287,26 @@ export function buildCatalog(live: LiveModel[], dev: Map<string, DevModel>): Cat
   return live.map((model) => buildCatalogEntry(model, dev.get(model.id)));
 }
 
+/**
+ * Keep the last known metadata for live models that models.dev does not
+ * describe.
+ *
+ * `buildCatalogEntry` falls back to conservative defaults when models.dev has
+ * no entry. That happens both when the catalog fetch fails and when a brand
+ * new model is listed by Cline before models.dev adds it; persisting those
+ * defaults would overwrite real limits in the cache. Reuse the previously
+ * cached entry when one exists instead.
+ */
+export function mergeCachedMetadata(
+  models: CatalogEntry[],
+  dev: Map<string, DevModel>,
+  previous: CatalogCache | undefined,
+): CatalogEntry[] {
+  if (!previous) return models;
+  const known = new Map(previous.models.map((model) => [model.id, model]));
+  return models.map((model) => (dev.has(model.id) ? model : (known.get(model.id) ?? model)));
+}
+
 // ─── Cache ─────────────────────────────────────────────────────────────────
 
 export interface CatalogCache {
@@ -459,7 +479,8 @@ export async function discoverCatalog(options: DiscoverOptions = {}): Promise<Di
   }
 
   if (live) {
-    const models = buildCatalog(live, dev ?? new Map());
+    const devMap = dev ?? new Map();
+    const models = mergeCachedMetadata(buildCatalog(live, devMap), devMap, cache);
     if (models.length > 0) {
       writeCatalogCache({ version: 1, fetchedAt: now, models }, options.cachePath);
       return { models, source: "network", fetchedAt: now, warnings };

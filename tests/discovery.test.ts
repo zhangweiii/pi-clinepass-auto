@@ -298,6 +298,43 @@ test("discoverCatalog falls back to a stale cache when the live source fails", a
   }
 });
 
+test("discoverCatalog keeps cached limits when models.dev is unavailable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clinepass-auto-"));
+  const cachePath = join(dir, "catalog.json");
+  try {
+    // First run: both sources answer, so the cache holds real limits.
+    const goodFetch: typeof globalThis.fetch = async (input) =>
+      String(input).includes("recommended-models")
+        ? jsonResponse({ clinePass: [{ id: "cline-pass/glm-5.3", name: "GLM-5.3" }] })
+        : jsonResponse(MODELS_DEV_FIXTURE);
+    await discoverCatalog({ fetch: goodFetch, cachePath, now: 1000 });
+
+    // Second run: live ids still arrive, models.dev is down. The fallback
+    // constants must not overwrite the cached limits (nor be persisted).
+    const devDownFetch: typeof globalThis.fetch = async (input) => {
+      if (String(input).includes("recommended-models")) {
+        return jsonResponse({ clinePass: [{ id: "cline-pass/glm-5.3", name: "GLM-5.3" }] });
+      }
+      throw new Error("models.dev down");
+    };
+    const result = await discoverCatalog({
+      fetch: devDownFetch,
+      cachePath,
+      now: 1000 + 24 * 60 * 60 * 1000,
+      ttlMs: 60_000,
+    });
+    assert.equal(result.source, "network");
+    assert.equal(result.models[0]?.contextWindow, 1_000_000);
+    assert.equal(result.models[0]?.maxTokens, 131_072);
+    assert.ok(result.warnings.some((warning) => warning.includes("models.dev fetch failed")));
+
+    const onDisk = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(onDisk.models[0]?.contextWindow, 1_000_000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("discoverCatalog falls back to the bundled seed when everything is unavailable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "clinepass-auto-"));
   const cachePath = join(dir, "catalog.json");
