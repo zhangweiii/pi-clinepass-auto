@@ -8,7 +8,7 @@ import { DEFAULT_PREFS, parsePrefs, prefsPath, readPrefs, writePrefs } from "../
 // ─── Parsing ───────────────────────────────────────────────────────────────
 
 test("parsePrefs tolerates malformed input", () => {
-  const empty = { meterHidden: false, webToolsHidden: false, showFreeModels: false, routes: {} };
+  const empty = { meterHidden: false, webToolsHidden: false, showFreeModels: false, routes: {}, lockProviders: false };
   assert.deepEqual(parsePrefs("not json"), empty);
   assert.deepEqual(parsePrefs("[]"), empty);
   assert.deepEqual(parsePrefs("null"), empty);
@@ -21,18 +21,21 @@ test("parsePrefs only accepts a literal true for meterHidden", () => {
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
   assert.deepEqual(parsePrefs('{"meterHidden":"true"}'), {
     meterHidden: false,
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
   assert.deepEqual(parsePrefs('{"meterHidden":1}'), {
     meterHidden: false,
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
 });
 
@@ -42,18 +45,21 @@ test("parsePrefs only accepts a literal true for webToolsHidden", () => {
     webToolsHidden: true,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
   assert.deepEqual(parsePrefs('{"webToolsHidden":"yes"}'), {
     meterHidden: false,
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
   assert.deepEqual(parsePrefs('{"webToolsHidden":0}'), {
     meterHidden: false,
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
 });
 
@@ -63,12 +69,14 @@ test("parsePrefs only accepts a literal true for showFreeModels", () => {
     webToolsHidden: false,
     showFreeModels: true,
     routes: {},
+    lockProviders: false,
   });
   assert.deepEqual(parsePrefs('{"showFreeModels":"yes"}'), {
     meterHidden: false,
     webToolsHidden: false,
     showFreeModels: false,
     routes: {},
+    lockProviders: false,
   });
 });
 
@@ -86,6 +94,12 @@ test("parseRoutes keeps only well-formed channel preferences", () => {
   assert.deepEqual(parsePrefs('{"routes":"nope"}').routes, {});
 });
 
+test("parsePrefs only accepts a literal true for lockProviders", () => {
+  assert.equal(parsePrefs('{"lockProviders":true}').lockProviders, true);
+  assert.equal(parsePrefs('{"lockProviders":"true"}').lockProviders, false);
+  assert.equal(parsePrefs('{"lockProviders":1}').lockProviders, false);
+});
+
 // ─── Disk round-trip ───────────────────────────────────────────────────────
 
 test("readPrefs returns defaults when the file is missing", () => {
@@ -101,15 +115,16 @@ test("writePrefs round-trips through readPrefs", () => {
   const dir = mkdtempSync(join(tmpdir(), "clinepass-prefs-"));
   try {
     const path = join(dir, "nested", "prefs.json");
-    writePrefs({ meterHidden: true, webToolsHidden: false, showFreeModels: false, routes: {} }, path);
+    writePrefs({ meterHidden: true, webToolsHidden: false, showFreeModels: false, routes: {}, lockProviders: false }, path);
     assert.deepEqual(readPrefs(path), {
       meterHidden: true,
       webToolsHidden: false,
       showFreeModels: false,
       routes: {},
+      lockProviders: false,
     });
     writePrefs(
-      { meterHidden: false, webToolsHidden: true, showFreeModels: true, routes: { m: { only: ["nebius"] } } },
+      { meterHidden: false, webToolsHidden: true, showFreeModels: true, routes: { m: { only: ["nebius"] } }, lockProviders: false },
       path,
     );
     assert.deepEqual(readPrefs(path), {
@@ -117,6 +132,7 @@ test("writePrefs round-trips through readPrefs", () => {
       webToolsHidden: true,
       showFreeModels: true,
       routes: { m: { only: ["nebius"] } },
+      lockProviders: false,
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

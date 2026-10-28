@@ -18,6 +18,7 @@ pi install npm:pi-clinepass-auto
 - **Server-truth usage meter** — the footer shows what Cline actually billed.
 - **Web tools** — `web_search` and `web_fetch`, billed to the same subscription.
 - **Upstream channels** — see which channel serves a model, and set it when the gateway allows it.
+- **Provider lock** — opt-in: keep each model on its official channel (`deepseek`, `zai`, …) or the one you set.
 - **Zero configuration** — reuses an existing Cline CLI login if you have one.
 
 ---
@@ -86,7 +87,8 @@ report, or `/clinepass` for the menu.
 | Usage meter | Footer meter, `/cline-usage` report, plan windows, per-session persistence → [Usage meter](#usage-meter-and-plan-limits) |
 | Web tools | `web_search` (Cline's Exa-backed search) and `web_fetch` (local, free) → [Web tools](#web-search-and-page-fetching) |
 | Upstream channels | See which upstream serves a model, and set a channel preference → [Upstream channels](#upstream-channels) |
-| Commands | `/clinepass`, `/cline-usage`, `/usage` → [Reference](#commands-and-settings) |
+| Provider lock | Opt-in: every model stays on its official channel, or the one you set → [Provider lock](#provider-lock) |
+| Commands | `/clinepass`, `/cline-route`, `/cline-lock`, `/cline-usage`, `/usage` → [Reference](#commands-and-settings) |
 | Auth | `/login` (Cline CLI reuse or API key), automatic WorkOS token refresh → [How it works](#how-it-works) |
 
 ---
@@ -175,6 +177,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | --- | --- |
 | **Report** | Renders the report above as a widget. |
 | **Upstream channel…** | Inspect a model's upstream channel; set, clear, or re-check a preference. |
+| **Provider lock: on/off** | Toggles the provider lock (persisted); your per-model picks still win. |
 | **Refresh model catalog** | Forces a live catalog refresh and re-registers models. |
 | **Hide report** | Clears the report widget. |
 | **Hide / Show footer meter** | Toggles the footer meter (persisted). |
@@ -284,6 +287,39 @@ Checked   12:41 · 2 probes ≈ $0.0001
 - **The `/cline-usage` report** prints the cached result as a `Route` line.
 - Preferences live in `clinepass-auto-prefs.json` under `routes`.
 
+### Provider lock
+
+Routing is per model, and the gateway can move a model between channels from
+one request to the next. If you want the vendor itself to serve a model every
+time, turn the provider lock on:
+
+```
+/cline-lock            # interactive menu (toggle / show effective channels)
+/cline-lock on         # lock
+/cline-lock off        # unlock
+/cline-lock status     # show what every model will send
+```
+
+With the lock on, each `cline-pass/*` model is pinned to:
+
+1. **your channel** — when `/cline-route` saved one for that model;
+2. otherwise its **official channel**, derived from the model family:
+   `deepseek* → deepseek`, `glm* / zai* → zai → zhipu`,
+   `qwen* → alibaba → qwen`, `kimi* → moonshot`, `minimax* → minimax`,
+   `mimo* → xiaomi`, and the vendor names for OpenAI, Anthropic, Google, xAI,
+   Mistral, Llama and Stepfun models;
+3. otherwise the **gateway's choice** — an unknown family is never guessed,
+   because the direct routing path refuses a channel name it does not know.
+
+The official default is strict (`only`): the gateway must stay on that vendor
+or refuse the request, and cannot silently fall back to another one. A
+per-model pick from `/cline-route` always wins, and `Clear preference` gives
+the model back to its official channel while the lock stays on.
+
+The lock is off by default: nothing is sent and the gateway routes as it always
+did. `/cline-route` shows the state on its `Lock` line, and the switch lives in
+`clinepass-auto-prefs.json` as `lockProviders`.
+
 ## Commands and settings
 
 ### Slash commands
@@ -292,6 +328,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | --- | --- |
 | `/clinepass` | Menu: report, upstream channel, catalog refresh, meter and web-tool toggles. |
 | `/cline-route` | Show the upstream channel of a model and whether it can be set. |
+| `/cline-lock` | Lock every model to its official channel (or your pick); `on`, `off`, `status`. |
 | `/cline-usage` | Print the usage/limits report (no footer). |
 | `/usage` | Alias of `/cline-usage`. |
 | `/login` | Sign in — select **ClinePass**. |
@@ -309,7 +346,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | Path | Content |
 | --- | --- |
 | `<agent dir>/clinepass-auto-catalog.json` | Cached model catalog (6 h TTL). |
-| `<agent dir>/clinepass-auto-prefs.json` | Meter and web-tool visibility. |
+| `<agent dir>/clinepass-auto-prefs.json` | Meter, web-tool and provider-lock preferences, plus per-model channels. |
 
 ---
 
@@ -509,7 +546,9 @@ Publishing with the `pi-package` keyword is all that is needed for the
   request, not a command: some models (for example
   `cline-pass/deepseek-v4.1-flash`) are served from a route the gateway will not
   hand over. The plugin reports that as `no right now` with the observed
-  evidence rather than pretending the preference worked.
+  evidence rather than pretending the preference worked. The provider lock is
+  sent the same way; if the gateway does not expose a vendor's official channel
+  for a model, the strict default can be ignored or refused.
 - **Free tier** is hidden by default and blocked on the API path (see
   [Models](#models)); `/clinepass → Show free models` registers it anyway so it
   can be listed.

@@ -28,16 +28,22 @@ import { discoverCatalog, explainFreeModelError, isFreeModelId, loadInitialCatal
 import { DEFAULT_PREFS, readPrefs, writePrefs, type Prefs } from "./prefs.ts";
 import {
   applyRoutePreference,
+  buildLockLines,
   buildProbeBody,
   buildRouteLines,
   capabilityHint,
   judgeCapability,
   mergeChannelLists,
+  officialChannelsForModel,
   orderChannels,
   parseRoutingFacts,
+  resolveRoutePreference,
   summarizeRoute,
   type RouteCapability,
+  type RouteLockInfo,
   type RoutePreference,
+  type RoutePreferenceSource,
+  type RouteResolution,
   type RoutingFacts,
 } from "./routes.ts";
 import {
@@ -58,6 +64,7 @@ import { applyWebToolActivation, registerWebTools } from "./webtools.ts";
 const STATUS_KEY = "clinepass-usage";
 const REPORT_KEY = "clinepass-report";
 const ROUTE_KEY = "clinepass-route";
+const LOCK_KEY = "clinepass-lock";
 const FREE_ALIAS = "cline-pass";
 
 /** Catalog prefix of the subscription models. */
@@ -119,6 +126,8 @@ interface RouteInspection {
   /** Why a preference is not taking effect, from the unpinned observation. */
   hint?: string;
   preference?: RoutePreference;
+  /** `manual` (your pick) or `official` (filled in by the provider lock). */
+  source?: RoutePreferenceSource;
   at: number;
 }
 
@@ -308,6 +317,32 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 }
 
 /**
+ * Channel preference that is actually sent for a model: the user's stored
+ * choice first, then the vendor's official channel while the provider lock is
+ * on. The lock only covers subscription models — other providers use the same
+ * `before_provider_request` hook with their own model ids.
+ */
+function routeResolution(model: string): RouteResolution {
+  return resolveRoutePreference({
+    model,
+    routes: prefs.routes,
+    lockProviders: prefs.lockProviders && model.startsWith(PAID_PREFIX),
+  });
+}
+
+/** Provider-lock state for the route panel. */
+function lockInfoFor(model: string): RouteLockInfo {
+  const resolution = routeResolution(model);
+  return {
+    enabled: prefs.lockProviders,
+    ...(resolution.source ? { source: resolution.source } : {}),
+    ...(resolution.source === "official" && resolution.preference
+      ? { officialChannels: resolution.preference.only }
+      : {}),
+  };
+}
+
+/**
  * Send one cheap probe and read the gateway's routing facts. Retries because
  * the gateway occasionally answers a tiny completion with an empty body.
  */
@@ -356,7 +391,8 @@ async function inspectModelRoute(
   model: string,
   signal?: AbortSignal,
 ): Promise<RouteInspection | undefined> {
-  const preference = prefs.routes[model];
+  const resolution = routeResolution(model);
+  const preference = resolution.preference;
   const preferred = preference?.only[0];
 
   // Unpinned first: it reports the widest channel list, which the picker needs
@@ -390,6 +426,7 @@ async function inspectModelRoute(
     active,
     ...(capability === "not-pinnable" ? { hint: capabilityHint(serving) } : {}),
     ...(preference ? { preference } : {}),
+    ...(resolution.source ? { source: resolution.source } : {}),
     at: Date.now(),
   };
   routeCache.set(model, inspection);
@@ -406,6 +443,7 @@ function renderRouteWidget(ctx: ExtensionContext, inspection: RouteInspection, w
     facts: inspection.facts,
     capability: inspection.capability,
     ...(inspection.preference ? { preference: inspection.preference } : {}),
+    lock: lockInfoFor(inspection.model),
     active: inspection.active,
     checkedLabel: clockLabel(inspection.at),
     costLabel: ROUTE_PROBE_COST_LABEL,
@@ -495,7 +533,7 @@ async function routeMenu(ctx: ExtensionCommandContext, model: string): Promise<v
 
   const actions = [
     "Set channel…",
-    ...(inspection.preference ? ["Clear preference"] : []),
+    ...(prefs.routes[model] ? ["Clear preference"] : []),
     "Check again",
     "Close",
   ];
@@ -514,7 +552,12 @@ async function routeMenu(ctx: ExtensionCommandContext, model: string): Promise<v
     writePrefs(prefs);
     routeCache.delete(model);
     const cleared = await showRoutePanel(ctx, model, { force: true });
-    notify(ctx, `Upstream for ${model} back to automatic (${cleared?.facts.finalProvider ?? "unknown"}).`, "info");
+    const official = prefs.lockProviders ? officialChannelsForModel(model) : [];
+    const fallback =
+      official.length > 0
+        ? `back to the locked official channel (${official.join(" → ")})`
+        : "back to automatic";
+    notify(ctx, `Upstream for ${model} ${fallback} (${cleared?.facts.finalProvider ?? "unknown"}).`, "info");
     return;
   }
 
@@ -551,6 +594,45 @@ async function routeMenu(ctx: ExtensionCommandContext, model: string): Promise<v
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Render the provider-lock panel (`/cline-lock`, `/clinepass`). */
+function showLockPanel(ctx: ExtensionContext, warning?: string): void {
+  const lines = buildLockLines({
+    lockProviders: prefs.lockProviders,
+    routes: prefs.routes,
+    models: routeModels().map((entry) => entry.id),
+  });
+  if (warning) lines.push(`Note          ${warning}`);
+  if (!ctx.hasUI) {
+    console.log(`\n${lines.join("\n")}\n`);
+    return;
+  }
+  try {
+    ctx.ui?.setWidget?.(LOCK_KEY, lines);
+  } catch {
+    // Session replaced or shut down.
+  }
+}
+
+/** Flip the provider lock and tell the user what it now does. */
+function setProviderLock(ctx: ExtensionCommandContext, enabled: boolean): void {
+  prefs = { ...prefs, lockProviders: enabled };
+  writePrefs(prefs);
+  routeCache.clear();
+  showLockPanel(ctx);
+  const models = routeModels();
+  if (enabled) {
+    const mapped = models.filter((entry) => officialChannelsForModel(entry.id).length > 0).length;
+    const unmapped = models.length - mapped;
+    notify(
+      ctx,
+      `Provider lock on — ${mapped}/${models.length} model(s) pinned to their official channel${unmapped > 0 ? `; ${unmapped} left to the gateway (unknown family)` : ""}.`,
+      "info",
+    );
+    return;
+  }
+  notify(ctx, "Provider lock off — the gateway picks each model's channel again.", "info");
 }
 
 /**
@@ -711,15 +793,17 @@ export default function (pi: ExtensionAPI): void {
   pi.registerProvider(PROVIDER_NAME, providerConfig(initial.models, onLoginSuccess));
 
   // Channel preferences ride on every provider request, so a pin keeps
-  // applying even after the gateway's affinity drifts away from it.
+  // applying even after the gateway's affinity drifts away from it. With the
+  // provider lock on, models without a pick fall back to their official
+  // channel; the lock only applies to `cline-pass/*` ids (see routeResolution).
   pi.on("before_provider_request", (event) => {
     const payload = event.payload;
     const model =
       typeof payload === "object" && payload !== null ? (payload as { model?: unknown }).model : undefined;
     if (typeof model !== "string") return;
-    const preference = prefs.routes[model];
-    if (!preference) return;
-    return applyRoutePreference(payload, preference);
+    const resolution = routeResolution(model);
+    if (!resolution.preference) return;
+    return applyRoutePreference(payload, resolution.preference);
   });
 
   pi.registerCommand("cline-route", {
@@ -747,6 +831,36 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("cline-lock", {
+    description: "Lock ClinePass models to their official upstream channel (opt-in)",
+    handler: async (args, ctx) => {
+      const arg = args.trim().toLowerCase();
+      if (arg === "on" || arg === "off") {
+        setProviderLock(ctx, arg === "on");
+        return;
+      }
+      if (arg !== "" && arg !== "status") {
+        notify(ctx, "Usage: /cline-lock [on|off|status]", "warning");
+        return;
+      }
+      if (!ctx.hasUI || !ctx.ui?.select || arg === "status") {
+        showLockPanel(ctx);
+        return;
+      }
+      const choice = await ctx.ui.select("Provider lock", [
+        prefs.lockProviders ? "Unlock — let the gateway pick" : "Lock to official channels",
+        "Show effective channels",
+        "Close",
+      ]);
+      if (!choice || choice === "Close") return;
+      if (choice === "Show effective channels") {
+        showLockPanel(ctx);
+        return;
+      }
+      setProviderLock(ctx, !prefs.lockProviders);
+    },
+  });
+
   pi.on("session_start", (_event, ctx) => {
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
     const totals = sumSessionCosts(entries);
@@ -764,16 +878,24 @@ export default function (pi: ExtensionAPI): void {
     webToolsRemovedByExtension.clear();
     syncWebToolActivation(pi);
 
-    // A saved channel preference may start working once the gateway's
-    // affinity frees up; re-check the active model quietly and tell the user
-    // only when it starts taking effect.
+    // A saved channel preference (or the provider lock) may start working
+    // once the gateway's affinity frees up; re-check the active model quietly
+    // and tell the user only when it starts taking effect.
     const pinnedModel = ctx.model?.id;
-    if (pinnedModel && prefs.routes[pinnedModel]) {
+    const activeResolution = pinnedModel ? routeResolution(pinnedModel) : {};
+    if (pinnedModel && activeResolution.preference) {
+      const source = activeResolution.source;
       const before = routeCache.get(pinnedModel);
       void (async () => {
         const inspection = await inspectModelRoute(pinnedModel, ctx.signal).catch(() => undefined);
         if (!inspection?.active || before?.active) return;
-        notify(ctx, `Upstream for ${pinnedModel} is now ${inspection.facts.finalProvider} — your channel preference is taking effect.`, "info");
+        notify(
+          ctx,
+          source === "official"
+            ? `Upstream for ${pinnedModel} is now ${inspection.facts.finalProvider} — the provider lock is taking effect.`
+            : `Upstream for ${pinnedModel} is now ${inspection.facts.finalProvider} — your channel preference is taking effect.`,
+          "info",
+        );
       })();
     }
 
@@ -821,6 +943,7 @@ export default function (pi: ExtensionAPI): void {
     routeCache.clear();
     ctx.ui?.setStatus?.(STATUS_KEY, undefined);
     ctx.ui?.setWidget?.(ROUTE_KEY, undefined);
+    ctx.ui?.setWidget?.(LOCK_KEY, undefined);
     ctx.ui?.setWidget?.(REPORT_KEY, undefined);
   });
 
@@ -831,6 +954,7 @@ export default function (pi: ExtensionAPI): void {
       const choices = [
         "Report — usage, limits, catalog",
         "Upstream channel…",
+        prefs.lockProviders ? "Provider lock: on — unlock" : "Provider lock: off — lock to official channels",
         "Refresh model catalog",
         "Hide report",
         prefs.meterHidden ? "Show footer meter" : "Hide footer meter",
@@ -854,6 +978,11 @@ export default function (pi: ExtensionAPI): void {
         const model = await pickRouteModel(ctx);
         if (!model) return;
         await routeMenu(ctx, model);
+        return;
+      }
+
+      if (choice.startsWith("Provider lock")) {
+        setProviderLock(ctx, !prefs.lockProviders);
         return;
       }
 

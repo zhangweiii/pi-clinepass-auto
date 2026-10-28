@@ -16,6 +16,7 @@ pi install npm:pi-clinepass-auto
 - **模型目录自动更新** — ClinePass 上架新模型时无需升级本包即可看到。
 - **服务端真值用量表** — footer 显示的是 Cline 实际计费的数字。
 - **网页工具** — `web_search` 与 `web_fetch`，同样计入这份订阅。
+- **供应商锁定** — 可选：让每个模型固定使用官方供应商（`deepseek`、`zai` …），或你指定的渠道。
 - **零配置** — 如果你已经登录过 Cline CLI，会自动复用。
 
 ---
@@ -81,7 +82,8 @@ Cline: $0.01 turn · $0.18 session ($0.05 search) · 5h 12% · 7d 34% · 30d 13%
 | 用量表 | footer 计量、`/cline-usage` 报表、套餐窗口、跨会话持久化 → [用量与额度](#用量与额度) |
 | 网页工具 | `web_search`（Cline 的 Exa 搜索）与 `web_fetch`（本地、免费） → [网页工具](#网页搜索与页面抓取) |
 | 上游渠道 | 查看模型由哪个上游服务、并在网关允许时指定渠道 → [上游渠道](#上游渠道) |
-| 命令 | `/clinepass`、`/cline-usage`、`/usage` → [命令与设置](#命令与设置) |
+| 供应商锁定 | 可选：每个模型固定使用官方供应商，或你指定的渠道 → [供应商锁定](#供应商锁定) |
+| 命令 | `/clinepass`、`/cline-route`、`/cline-lock`、`/cline-usage`、`/usage` → [命令与设置](#命令与设置) |
 | 鉴权 | `/login`（复用 Cline CLI 或粘贴 key）、WorkOS token 自动刷新 → [工作原理](#工作原理) |
 
 ---
@@ -157,6 +159,7 @@ Catalog  17 models (network, updated 9/27 11:02)
 | --- | --- |
 | **Report** | 把上面的报表显示为 widget。 |
 | **Upstream channel…** | 查看某模型的上游渠道；指定 / 清除 / 重新检测。 |
+| **Provider lock: on/off** | 开关供应商锁定（持久化）；你为单个模型指定的渠道仍然优先。 |
 | **Refresh model catalog** | 强制实时刷新目录并立即重新注册模型。 |
 | **Hide report** | 清除报表 widget。 |
 | **Hide / Show footer meter** | 开关 footer 计量（持久化）。 |
@@ -244,6 +247,35 @@ Checked   12:41 · 2 probes ≈ $0.0001
 - **`/cline-usage`** 会用一行 `Route` 打印缓存的结果。
 - 偏好保存在 `clinepass-auto-prefs.json` 的 `routes` 字段。
 
+### 供应商锁定
+
+网关是**按模型**路由的，同一个模型可能在不同请求之间被换到不同渠道。如果希望每次都固定由官方供应商服务，
+打开供应商锁定：
+
+```
+/cline-lock            # 交互菜单（开关 / 查看实际渠道）
+/cline-lock on         # 锁定
+/cline-lock off        # 解除
+/cline-lock status     # 查看每个模型会发送什么
+```
+
+锁定后，每个 `cline-pass/*` 模型按以下顺序固定：
+
+1. **你指定的渠道** —— `/cline-route` 为该模型保存过的渠道；
+2. 否则使用**官方供应商**，按模型家族判断：
+   `deepseek* → deepseek`、`glm* / zai* → zai → zhipu`、
+   `qwen* → alibaba → qwen`、`kimi* → moonshot`、`minimax* → minimax`、
+   `mimo* → xiaomi`，以及 OpenAI、Anthropic、Google、xAI、Mistral、Llama、
+   Stepfun 模型对应的供应商名称；
+3. 否则交还**网关决定** —— 不认识的家族绝不猜测，因为直连路由会拒绝它不认识的渠道名。
+
+官方默认是 `strict`（`only`）：网关必须留在该供应商，否则拒绝请求，不会悄悄回退到别家。
+`/cline-route` 里为单个模型指定的渠道始终优先；锁定开启时执行 `Clear preference`，
+该模型会回到官方渠道，而锁定本身保持不变。
+
+锁定默认关闭：不发送任何渠道字段，网关按原来的方式路由。`/cline-route` 的 `Lock` 行会显示状态，
+开关保存在 `clinepass-auto-prefs.json` 的 `lockProviders` 字段。
+
 ## 命令与设置
 
 ### 斜杠命令
@@ -252,6 +284,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | --- | --- |
 | `/clinepass` | 菜单：报表、上游渠道、目录刷新、计量与网页工具开关。 |
 | `/cline-route` | 查看指定模型的上游渠道，以及能否指定。 |
+| `/cline-lock` | 把每个模型锁定到官方渠道（或你指定的渠道）；支持 `on`、`off`、`status`。 |
 | `/cline-usage` | 打印用量/额度报表（不占 footer）。 |
 | `/usage` | `/cline-usage` 的别名。 |
 | `/login` | 登录——选择 **ClinePass**。 |
@@ -269,7 +302,7 @@ Checked   12:41 · 2 probes ≈ $0.0001
 | 路径 | 内容 |
 | --- | --- |
 | `<agent 目录>/clinepass-auto-catalog.json` | 模型目录缓存（6 小时 TTL）。 |
-| `<agent 目录>/clinepass-auto-prefs.json` | 计量与网页工具的显示偏好。 |
+| `<agent 目录>/clinepass-auto-prefs.json` | 计量、网页工具与供应商锁定偏好，以及每个模型的渠道。 |
 
 ---
 
@@ -440,6 +473,7 @@ pi install npm:pi-clinepass-auto@beta
 - **上游路由由网关决定**。渠道偏好是“请求”而不是“命令”：部分模型（如
   `cline-pass/deepseek-v4.1-flash`）由网关自己的路由承接，不会交给客户端。
   插件会把这种情况如实显示为 `no right now` 并附上观测到的事实，而不是假装偏好生效了。
+  供应商锁定同样只是请求：如果网关没有为某个模型提供其官方渠道，strict 默认值可能被忽略或拒绝。
 - **免费档**默认隐藏，且在 API 路径上被网关拒绝（见 [模型](#模型)）；
   `/clinepass → Show free models` 可以把它注册出来以便查看。
 - 本包与 Cline、pi、models.dev **均无隶属关系**。

@@ -22,6 +22,12 @@ export interface Prefs {
   showFreeModels: boolean;
   /** Upstream channel preference per model id. */
   routes: Record<string, RoutePreference>;
+  /**
+   * Keep every ClinePass model on one upstream channel: the user's choice
+   * when one is stored in `routes`, otherwise the vendor's official channel.
+   * Off by default; the gateway picks the channel when disabled.
+   */
+  lockProviders: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -29,6 +35,7 @@ export const DEFAULT_PREFS: Prefs = {
   webToolsHidden: false,
   showFreeModels: false,
   routes: {},
+  lockProviders: false,
 };
 
 export function prefsPath(): string {
@@ -66,6 +73,7 @@ export function parsePrefs(text: string): Prefs {
       webToolsHidden: parsed.webToolsHidden === true,
       showFreeModels: parsed.showFreeModels === true,
       routes: parseRoutes(parsed.routes),
+      lockProviders: parsed.lockProviders === true,
     };
   } catch {
     return { ...DEFAULT_PREFS };

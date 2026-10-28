@@ -2,16 +2,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyRoutePreference,
+  buildLockLines,
   buildProbeBody,
   buildRouteFields,
   buildRouteLines,
   capabilityHint,
   formatChannelList,
   judgeCapability,
+  lockSentence,
   mergeChannelLists,
+  officialChannelsForModel,
   orderChannels,
   parseRoutingFacts,
   pickProbeChannel,
+  resolveRoutePreference,
   servedLatencyMs,
   summarizeRoute,
   type RoutePanelInput,
@@ -217,6 +221,83 @@ test("buildProbeBody is a cheap non-streaming request with reasoning off", () =>
   assert.equal(pinned.stream, false);
 });
 
+// ─── Provider lock ─────────────────────────────────────────────────────────
+
+test("officialChannelsForModel maps each family to its vendor channel", () => {
+  assert.deepEqual(officialChannelsForModel("cline-pass/deepseek-v4-pro"), ["deepseek"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/glm-5.3"), ["zai", "zhipu"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/qwen3.8-max"), ["alibaba", "qwen"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/kimi-k3"), ["moonshot", "kimi"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/minimax-m3"), ["minimax"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/mimo-v2.6-pro"), ["xiaomi", "mimo"]);
+  assert.deepEqual(officialChannelsForModel("cline-pass/mystery-1"), []);
+  assert.deepEqual(officialChannelsForModel(""), []);
+});
+
+test("resolveRoutePreference keeps a manual pick and fills in only while locked", () => {
+  const manual = { only: ["nebius"] };
+  assert.deepEqual(
+    resolveRoutePreference({
+      model: "cline-pass/deepseek-v4-pro",
+      routes: { "cline-pass/deepseek-v4-pro": manual },
+      lockProviders: true,
+    }),
+    { preference: manual, source: "manual" },
+  );
+  assert.deepEqual(
+    resolveRoutePreference({ model: "cline-pass/deepseek-v4-pro", routes: {}, lockProviders: false }),
+    {},
+  );
+  assert.deepEqual(
+    resolveRoutePreference({ model: "cline-pass/deepseek-v4-pro", routes: {}, lockProviders: true }),
+    { preference: { only: ["deepseek"], mode: "strict" }, source: "official" },
+  );
+  // Unknown families stay with the gateway instead of guessing a channel.
+  assert.deepEqual(
+    resolveRoutePreference({ model: "cline-pass/mystery-1", routes: {}, lockProviders: true }),
+    {},
+  );
+});
+
+test("lockSentence explains off, manual, and official states", () => {
+  assert.equal(lockSentence({ enabled: false }), "off — the gateway picks the channel");
+  assert.equal(lockSentence({ enabled: true, source: "manual" }), "on — your channel");
+  assert.equal(
+    lockSentence({ enabled: true, source: "official", officialChannels: ["zai", "zhipu"] }),
+    "on — official zai → zhipu",
+  );
+  assert.equal(lockSentence({ enabled: true }), "on — no official channel known, the gateway picks");
+});
+
+test("buildLockLines lists the effective channel of every model", () => {
+  const lines = buildLockLines({
+    lockProviders: true,
+    routes: { "cline-pass/glm-5.3": { only: ["nebius"] } },
+    models: ["cline-pass/deepseek-v4-pro", "cline-pass/glm-5.3", "cline-pass/mystery-1"],
+  });
+  assert.deepEqual(lines, [
+    "Provider lock  on",
+    "Mode           official channel, or the channel you set",
+    "Your picks     1 model(s) override the lock",
+    "Locked         1 official · 1 your picks · 1 automatic",
+    "Models",
+    "  cline-pass/deepseek-v4-pro  deepseek (official)",
+    "  cline-pass/glm-5.3  nebius (your pick)",
+    "  cline-pass/mystery-1  gateway's choice (no official channel known)",
+  ]);
+});
+
+test("buildLockLines stays short while the lock is off", () => {
+  assert.deepEqual(
+    buildLockLines({ lockProviders: false, routes: { m: { only: ["nebius"] } }, models: ["m"] }),
+    [
+      "Provider lock  off",
+      "Mode           the gateway picks each model's channel",
+      "Your picks     1 model(s) override the lock",
+    ],
+  );
+});
+
 // ─── Presentation ──────────────────────────────────────────────────────────
 
 function panel(patch: Partial<RoutePanelInput> = {}): RoutePanelInput {
@@ -249,6 +330,25 @@ test("buildRouteLines describes a pinnable model with an active preference", () 
     "Can set   yes — your channel is being used",
     "Serving   baseten  0.2s  ← your channel",
     "Pin       baseten (strict)",
+    "Channels  baseten · alibaba · fireworks",
+    "Checked   12:41 · 2 probes ≈ $0.0001",
+  ]);
+});
+
+test("buildRouteLines shows the provider lock between the pin and the channel list", () => {
+  const lines = buildRouteLines(
+    panel({
+      preference: { only: ["zai", "zhipu"], mode: "strict" },
+      lock: { enabled: true, source: "official", officialChannels: ["zai", "zhipu"] },
+      active: true,
+    }),
+  );
+  assert.deepEqual(lines, [
+    "Upstream  cline-pass/minimax-m3",
+    "Can set   yes — your channel is being used",
+    "Serving   baseten  0.2s  ← your channel",
+    "Pin       zai → zhipu (strict)",
+    "Lock      on — official zai → zhipu",
     "Channels  baseten · alibaba · fireworks",
     "Checked   12:41 · 2 probes ≈ $0.0001",
   ]);

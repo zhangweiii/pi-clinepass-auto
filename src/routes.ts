@@ -53,6 +53,86 @@ export interface RoutingFacts {
  */
 export type RouteCapability = "pinnable" | "not-pinnable";
 
+// ─── Provider lock ─────────────────────────────────────────────────────────
+
+/**
+ * Channel that publishes each model family. Used only by the provider lock,
+ * and only for models the user has not pinned themselves.
+ *
+ * Cline's gateway names a channel after the vendor, but the same vendor can
+ * appear under more than one name across routing pipelines, so aliases are
+ * listed in preference order. A family that is missing here stays on the
+ * gateway's own routing: guessing a channel name is worse than leaving it
+ * alone, because the direct routing path refuses names it does not know.
+ */
+const OFFICIAL_CHANNELS: { prefixes: string[]; channels: string[] }[] = [
+  { prefixes: ["deepseek"], channels: ["deepseek"] },
+  { prefixes: ["glm", "chatglm", "zhipu", "zai"], channels: ["zai", "zhipu"] },
+  { prefixes: ["qwen", "qwq"], channels: ["alibaba", "qwen"] },
+  { prefixes: ["kimi", "moonshot"], channels: ["moonshot", "kimi"] },
+  { prefixes: ["minimax", "abab"], channels: ["minimax"] },
+  { prefixes: ["mimo"], channels: ["xiaomi", "mimo"] },
+  { prefixes: ["mistral", "devstral", "codestral", "magistral"], channels: ["mistral"] },
+  { prefixes: ["gpt", "o1", "o3", "o4", "chatgpt"], channels: ["openai"] },
+  { prefixes: ["claude", "sonnet", "opus", "haiku"], channels: ["anthropic"] },
+  { prefixes: ["gemini", "gemma"], channels: ["google"] },
+  { prefixes: ["grok"], channels: ["xai"] },
+  { prefixes: ["llama", "meta"], channels: ["meta"] },
+  { prefixes: ["step"], channels: ["stepfun"] },
+];
+
+/** Model name without the catalog namespace (`cline-pass/glm-5.3` → `glm-5.3`). */
+function modelBasename(model: string): string {
+  const trimmed = model.trim().toLowerCase();
+  const slash = trimmed.lastIndexOf("/");
+  return slash === -1 ? trimmed : trimmed.slice(slash + 1).trim();
+}
+
+/**
+ * Official channel(s) for a model, most preferred first. Empty when the
+ * family is unknown — the provider lock then leaves the model to the gateway
+ * instead of inventing a channel name it may refuse.
+ */
+export function officialChannelsForModel(model: string): string[] {
+  const basename = modelBasename(model);
+  if (!basename) return [];
+  const family = OFFICIAL_CHANNELS.find((entry) => entry.prefixes.some((prefix) => basename.startsWith(prefix)));
+  return family ? [...family.channels] : [];
+}
+
+/** Where the channel preference sent with a request came from. */
+export type RoutePreferenceSource = "manual" | "official";
+
+export interface RouteResolution {
+  /** Preference to send with every request, when one applies. */
+  preference?: RoutePreference;
+  /** `manual` = the user set this channel; `official` = the provider lock did. */
+  source?: RoutePreferenceSource;
+}
+
+/**
+ * Pick the channel preference to send for a model.
+ *
+ * A per-model choice always wins. With the provider lock on, models without
+ * one fall back to their official channel; with it off, the gateway keeps
+ * full control. The official default is strict because the point of the lock
+ * is to stop the gateway from routing the model to another vendor.
+ */
+export function resolveRoutePreference(input: {
+  model: string;
+  /** Per-model preferences from `clinepass-auto-prefs.json`. */
+  routes: Record<string, RoutePreference>;
+  /** Global provider-lock switch. */
+  lockProviders: boolean;
+}): RouteResolution {
+  const manual = input.routes[input.model];
+  if (manual) return { preference: manual, source: "manual" };
+  if (!input.lockProviders) return {};
+  const channels = officialChannelsForModel(input.model);
+  if (channels.length === 0) return {};
+  return { preference: { only: channels, mode: "strict" }, source: "official" };
+}
+
 // ─── Parsing helpers ───────────────────────────────────────────────────────
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -218,12 +298,23 @@ export function capabilityHint(facts: RoutingFacts): string {
   return `The gateway kept ${serving} while ${facts.fallbacksAvailable.length - 1} other channel(s) were listed. Its affinity may free up; try again later.`;
 }
 
+export interface RouteLockInfo {
+  /** Global provider-lock switch. */
+  enabled: boolean;
+  /** Where the preference that is being sent came from. */
+  source?: RoutePreferenceSource;
+  /** Channels forced by the official default, when `source` is `official`. */
+  officialChannels?: string[];
+}
+
 export interface RoutePanelInput {
   model: string;
   facts: RoutingFacts;
   capability: RouteCapability;
   /** Stored preference, when one exists. */
   preference?: RoutePreference;
+  /** Provider-lock state for this model. */
+  lock?: RouteLockInfo;
   /** True when the serving channel is the preferred one. */
   active: boolean;
   /** Preformatted local check time, e.g. `12:41`. */
@@ -234,6 +325,17 @@ export interface RoutePanelInput {
   hint?: string;
   /** Optional trailing note (stale result, failed re-check, …). */
   warning?: string;
+}
+
+/** One-line provider-lock state: off, a manual pick, or the official default. */
+export function lockSentence(lock: RouteLockInfo): string {
+  if (!lock.enabled) return "off — the gateway picks the channel";
+  if (lock.source === "official") {
+    const channels = lock.officialChannels?.filter(Boolean).join(" → ");
+    return channels ? `on — official ${channels}` : "on — official channel (gateway's choice)";
+  }
+  if (lock.source === "manual") return "on — your channel";
+  return "on — no official channel known, the gateway picks";
 }
 
 /** Multi-line panel shown by `/cline-route` and the `/clinepass` menu. */
@@ -248,6 +350,7 @@ export function buildRouteLines(input: RoutePanelInput): string[] {
   if (input.preference) {
     lines.push(`${label("Pin")}${input.preference.only.join(" → ")} (${input.preference.mode ?? "strict"})`);
   }
+  if (input.lock) lines.push(`${label("Lock")}${lockSentence(input.lock)}`);
   lines.push(`${label("Channels")}${formatChannelList(input.facts)}`);
   lines.push(`${label("Checked")}${input.checkedLabel} · 2 probes ≈ ${input.costLabel}`);
   if (input.capability === "not-pinnable") lines.push(`${label("Why")}${input.hint ?? capabilityHint(input.facts)}`);
@@ -261,6 +364,58 @@ export function summarizeRoute(input: Omit<RoutePanelInput, "checkedLabel" | "co
   if (input.preference && input.active) return `${input.model} → ${input.facts.finalProvider} (your channel)`;
   if (input.capability === "pinnable") return `${input.model} · can set · ${serving}`;
   return `${input.model} · cannot set right now · ${serving}`;
+}
+
+export interface LockPanelInput {
+  /** Global provider-lock switch. */
+  lockProviders: boolean;
+  /** Per-model preferences. */
+  routes: Record<string, RoutePreference>;
+  /** Model ids to list, in display order. */
+  models: string[];
+}
+
+/**
+ * Multi-line panel shown by `/cline-lock`: which channel every model will
+ * send. Lists what the lock actually does instead of only repeating the
+ * switch, so an unknown model family is visible rather than silently left
+ * to the gateway.
+ */
+export function buildLockLines(input: LockPanelInput): string[] {
+  const lines = [`Provider lock  ${input.lockProviders ? "on" : "off"}`];
+  lines.push(
+    input.lockProviders
+      ? "Mode           official channel, or the channel you set"
+      : "Mode           the gateway picks each model's channel",
+  );
+  const picks = input.models.filter((model) => input.routes[model]).length;
+  if (picks > 0) lines.push(`Your picks     ${picks} model(s) override the lock`);
+  if (!input.lockProviders) return lines;
+
+  const rows: string[] = [];
+  let official = 0;
+  let manual = 0;
+  let automatic = 0;
+  for (const model of input.models) {
+    const resolution = resolveRoutePreference({ model, routes: input.routes, lockProviders: true });
+    if (!resolution.preference) {
+      automatic += 1;
+      rows.push(`  ${model}  gateway's choice (no official channel known)`);
+      continue;
+    }
+    const channels = resolution.preference.only.join(" → ");
+    if (resolution.source === "manual") {
+      manual += 1;
+      rows.push(`  ${model}  ${channels} (your pick)`);
+    } else {
+      official += 1;
+      rows.push(`  ${model}  ${channels} (official)`);
+    }
+  }
+  lines.push(`Locked         ${official} official · ${manual} your picks · ${automatic} automatic`);
+  if (rows.length === 0) lines.push("Models         none in the catalog yet");
+  else lines.push("Models", ...rows);
+  return lines;
 }
 
 // ─── Request fields ────────────────────────────────────────────────────────
